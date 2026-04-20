@@ -1,12 +1,11 @@
 # macwifi
 
 macOS WiFi scanning from Go, with real (unredacted) SSIDs, BSSIDs, channel
-info, security mode, and saved-network passwords.
+info, security modes, and saved-network passwords.
 
-macOS 15+ redacts SSIDs from every CLI tool that doesn't have Location
-Services permission, and only app bundles with a specific launch context
-can hold that permission. This library wraps a small signed Swift helper
-app (`WifiScanner.app`) that does; the Go side handles IPC and parsing.
+On macOS 15+, only apps granted Location Services can see live SSIDs. This
+library ships a small signed Swift helper (`WifiScanner.app`) that handles
+that side; the Go library handles everything else.
 
 ## Usage
 
@@ -18,9 +17,7 @@ import (
 )
 
 func main() {
-    appPath, _ := macwifi.DefaultAppPath()
-    s := &macwifi.Scanner{AppPath: appPath}
-
+    s := &macwifi.Scanner{}
     nets, err := s.Scan(context.Background())
     if err != nil { panic(err) }
 
@@ -29,22 +26,26 @@ func main() {
             n.SSID, n.RSSI, n.Security, n.Channel, n.ChannelWidth, n.BSSID)
     }
 
-    // Password lookup is a separate call (scan is silent; password prompts
-    // are handled by /usr/bin/security, which Apple pre-approved).
-    pw, _ := macwifi.Password("MyHomeWiFi")
+    // Saved password lookup. macOS shows a per-SSID "Allow access" dialog
+    // the first time; OnKeychainAccess lets you warn the user before it
+    // appears.
+    pw, _ := macwifi.Password("MyHomeWiFi",
+        macwifi.OnKeychainAccess(func(ssid string) {
+            fmt.Printf("macOS may prompt for access to the %q password — choose 'Always Allow' to skip this next time.\n", ssid)
+        }))
     fmt.Println("password:", pw)
 }
 ```
 
-Each `Network` exposes:
+### `Network` fields
 
 ```go
 SSID, BSSID, PHYMode string
 RSSI, Noise, Channel int
 ChannelBand          Band      // 2.4GHz / 5GHz / 6GHz / unknown
 ChannelWidth         int       // MHz
-Security             Security  // WPA2 / WPA3 / Open / Enterprise / ...
-Password             string    // always "" from Scan; use macwifi.Password
+Security             Security  // WPA2 / WPA3 / Open / Enterprise / OWE …
+Password             string    // always "" from Scan (see macwifi.Password)
 Current, Saved       bool
 ```
 
@@ -54,69 +55,48 @@ Current, Saved       bool
 make install   # builds scanner + copies WifiScanner.app → ~/.local/share/macwifi/
 ```
 
-Then in any Go program, `macwifi.DefaultAppPath()` will find it.
+`Scanner.Scan()` will find the installed app automatically. For testing,
+set `$MACWIFI_APP=/path/to/WifiScanner.app` to override.
 
-### Signing identity
+### First-run Location Services prompt
 
-`scanner/build.sh` auto-selects the first of **Apple Development → Developer
-ID Application → Apple Distribution** from your login keychain. Override
-via `SIGN_IDENTITY='Apple Development: Your Name (TEAMID)'`.
+The first time a Go consumer calls `Scan()`, macOS may show a permission
+dialog for "macwifi WiFi Scanner". Allow it once and the TCC grant persists
+across rebuilds as long as your signing identity doesn't change.
 
-The TCC Location Services grant is tied to this identity — the grant
-persists across rebuilds as long as you keep signing with the same cert.
+### Keychain passwords
 
-### First-run permission prompt
+WiFi passwords live in the System keychain with a restrictive ACL — only
+Apple's WiFi daemons (`airportd`) have silent access by default. Third
+parties (our `security` shell-out, any other tool) trigger a per-item
+"Allow access" dialog from macOS the first time they read an SSID.
 
-The first time the library launches `WifiScanner.app`, macOS will prompt
-for Location Services access. Accept it, or flip the toggle manually in
-**System Settings → Privacy & Security → Location Services → macwifi
-WiFi Scanner**. Subsequent scans are silent.
+Picking **"Always Allow"** on that dialog adds `/usr/bin/security` to the
+item's ACL — subsequent calls for that SSID are silent. You do this once
+per saved network you care about, not per app run.
+
+There is no safe way for an unprivileged library to bypass this prompt;
+it's a core part of the macOS security model.
 
 ## Architecture
 
 ```
-┌────────────┐   open -W --env MACWIFI_PORT   ┌─────────────────────┐
-│ Go library │ ───────────────────────────►  │ WifiScanner.app     │
-│            │                                │ (LaunchServices:    │
-│            │ ◄─────── 127.0.0.1:PORT ────── │  CoreWLAN + loc)    │
-│            │    binary response (MWIF…)    └─────────────────────┘
+┌────────────┐    open -W --env MACWIFI_PORT    ┌─────────────────────┐
+│ Go library │ ──────────────────────────────►  │ WifiScanner.app     │
+│            │                                   │ (LaunchServices:    │
+│            │ ◄─────── 127.0.0.1:PORT ───────── │  CoreWLAN + loc)    │
+│            │       binary response (MWIF…)    └─────────────────────┘
 └────────────┘
       │
-      │  /usr/bin/security find-generic-password   (on demand)
+      │  /usr/bin/security find-generic-password   (lazy, per call)
       ▼
-  Keychain
+  System keychain
 ```
 
-The scanner app is launched via `open -W` so it runs as a foreground
-LaunchServices app (required for Location Services to hand back real
-SSIDs). It connects back to a Go-listened ephemeral TCP port, writes a
-length-prefixed binary message, and exits.
+Scanner launched via `open -W` so macOS gives it foreground-app status
+(required for Location Services to return real SSIDs). It calls back to
+a Go-listened ephemeral TCP port, writes a length-prefixed binary message
+— see `protocol.go` (decoder) and `scanner/Sources/main.swift` (encoder)
+— and exits.
 
-Password lookup is **not** done from the scanner, because our custom
-code signature isn't in the System keychain's pre-approved ACL for WiFi
-passwords — each lookup would trigger an "allow access" prompt. Apple's
-`/usr/bin/security` binary IS on that list, so Go shells out to it
-instead; the lookup is silent.
-
-### Binary protocol
-
-```
-header  = "MWIF" | u8 version=1 | u8 msgType=0x01 | u16 errLen | errLen·utf8 | u32 count
-network = u16 ssidLen | ssid | u8 bssidLen | bssid |
-          i16 rssi | i16 noise | u16 channel | u8 band | u16 widthMHz |
-          u8 security | u8 phyLen | phy | u16 pwdLen | pwd | u8 flags
-```
-
-All multi-byte integers little-endian. See `protocol.go` (decoder) and
-`scanner/Sources/main.swift` (encoder). EOF terminates the stream.
-
-## Requirements
-
-- macOS 13+
-- Go 1.22+
-- Xcode Command Line Tools (`swiftc`, `codesign`)
-- A codesigning identity in your login keychain
-
-## License
-
-MIT.
+Password lookup runs only when `macwifi.Password(ssid)` is called.

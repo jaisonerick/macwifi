@@ -1,8 +1,7 @@
 // Example: scan once, print everything.
 //
-//	MACWIFI_APP=/path/to/WifiScanner.app go run ./examples/scan
-//
-// Or, after `make install`, simply `go run ./examples/scan`.
+//	go run ./examples/scan                 # scan only
+//	go run ./examples/scan --password SSID # look up a saved password
 package main
 
 import (
@@ -20,7 +19,9 @@ func main() {
 	flag.Parse()
 
 	if *showPw != "" {
-		pw, err := macwifi.Password(*showPw)
+		pw, err := macwifi.Password(*showPw, macwifi.OnKeychainAccess(func(ssid string) {
+			fmt.Fprintf(os.Stderr, "→ macOS may prompt for Keychain access to %q\n", ssid)
+		}))
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
@@ -33,13 +34,7 @@ func main() {
 		return
 	}
 
-	appPath, err := macwifi.DefaultAppPath()
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
-	}
-
-	scanner := &macwifi.Scanner{AppPath: appPath}
+	scanner := &macwifi.Scanner{}
 	nets, err := scanner.Scan(context.Background())
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "scan:", err)

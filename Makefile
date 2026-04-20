@@ -13,7 +13,7 @@ install: scanner
 	rm -rf $(INSTALL_DIR)/$(APP)
 	cp -R $(APP) $(INSTALL_DIR)/
 	@echo "→ installed $(APP) → $(INSTALL_DIR)/"
-	@echo "  Go library's DefaultAppPath will find it here."
+	@echo "  Scan() and Password() in Go consumers find it automatically."
 
 test:
 	go test ./...

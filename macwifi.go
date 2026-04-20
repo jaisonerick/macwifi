@@ -98,12 +98,9 @@ type Network struct {
 	Saved        bool   // in the preferred-networks list
 }
 
-// Scanner launches the signed helper app and decodes scan results.
+// Scanner is a zero-config entry point. The path to the bundled Swift helper
+// app is resolved internally — set $MACWIFI_APP to override for testing.
 type Scanner struct {
-	// AppPath is the path to WifiScanner.app. Required. Use DefaultAppPath
-	// for the common installed locations.
-	AppPath string
-
 	// Timeout bounds a single scan end-to-end. Defaults to 30s if zero.
 	Timeout time.Duration
 }
@@ -111,11 +108,9 @@ type Scanner struct {
 // Scan performs a one-shot scan and returns every network in range (plus any
 // saved-but-not-in-range networks as stub records with Saved=true).
 func (s *Scanner) Scan(ctx context.Context) ([]Network, error) {
-	if s.AppPath == "" {
-		return nil, fmt.Errorf("macwifi: Scanner.AppPath not set (use DefaultAppPath)")
-	}
-	if _, err := os.Stat(s.AppPath); err != nil {
-		return nil, fmt.Errorf("macwifi: app bundle %q: %w", s.AppPath, err)
+	appPath, err := resolveAppPath()
+	if err != nil {
+		return nil, err
 	}
 
 	timeout := s.Timeout
@@ -132,7 +127,7 @@ func (s *Scanner) Scan(ctx context.Context) ([]Network, error) {
 	defer listener.Close()
 	port := listener.Addr().(*net.TCPAddr).Port
 
-	args := []string{"-W", "--env", fmt.Sprintf("MACWIFI_PORT=%d", port), s.AppPath}
+	args := []string{"-W", "--env", fmt.Sprintf("MACWIFI_PORT=%d", port), appPath}
 
 	cmd := exec.CommandContext(ctx, "open", args...)
 	launchErr := make(chan error, 1)
@@ -173,12 +168,15 @@ func (s *Scanner) Scan(ctx context.Context) ([]Network, error) {
 	return nets, nil
 }
 
-// DefaultAppPath returns the first WifiScanner.app found in:
-//   1. $MACWIFI_APP (full path)
-//   2. <executable dir>/helpers/WifiScanner.app
-//   3. $HOME/.local/share/macwifi/WifiScanner.app
-//   4. /usr/local/share/macwifi/WifiScanner.app
-func DefaultAppPath() (string, error) {
+// resolveAppPath finds WifiScanner.app, in order:
+//  1. $MACWIFI_APP (full path) — escape hatch for testing.
+//  2. <executable dir>/../share/macwifi/WifiScanner.app
+//  3. $HOME/.local/share/macwifi/WifiScanner.app
+//  4. /usr/local/share/macwifi/WifiScanner.app
+//
+// Intentionally not exported: picking the helper binary is a library
+// concern, not a caller concern.
+func resolveAppPath() (string, error) {
 	if p := os.Getenv("MACWIFI_APP"); p != "" {
 		if _, err := os.Stat(p); err == nil {
 			return p, nil
@@ -186,10 +184,12 @@ func DefaultAppPath() (string, error) {
 	}
 	var candidates []string
 	if exe, err := os.Executable(); err == nil {
-		candidates = append(candidates, filepath.Join(filepath.Dir(exe), "helpers", "WifiScanner.app"))
+		candidates = append(candidates,
+			filepath.Join(filepath.Dir(exe), "..", "share", "macwifi", "WifiScanner.app"))
 	}
 	if home, err := os.UserHomeDir(); err == nil {
-		candidates = append(candidates, filepath.Join(home, ".local/share/macwifi/WifiScanner.app"))
+		candidates = append(candidates,
+			filepath.Join(home, ".local/share/macwifi/WifiScanner.app"))
 	}
 	candidates = append(candidates, "/usr/local/share/macwifi/WifiScanner.app")
 	for _, p := range candidates {
@@ -197,5 +197,5 @@ func DefaultAppPath() (string, error) {
 			return p, nil
 		}
 	}
-	return "", fmt.Errorf("macwifi: WifiScanner.app not found; build it and set $MACWIFI_APP or install to one of: %v", candidates)
+	return "", fmt.Errorf("macwifi: WifiScanner.app not installed. Run `make install` in the macwifi checkout (or set $MACWIFI_APP)")
 }
