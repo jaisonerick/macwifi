@@ -66,17 +66,32 @@ across rebuilds as long as your signing identity doesn't change.
 
 ### Keychain passwords
 
-WiFi passwords live in the System keychain with a restrictive ACL — only
-Apple's WiFi daemons (`airportd`) have silent access by default. Third
-parties (our `security` shell-out, any other tool) trigger a per-item
-"Allow access" dialog from macOS the first time they read an SSID.
+WiFi passwords live in `/Library/Keychains/System.keychain` with an ACL
+that only whitelists Apple's WiFi daemons (`airportd`, the AirPort app
+group). Anything else — our `/usr/bin/security` shell-out, a custom signed
+app, anything — triggers macOS's consent dialog.
 
-Picking **"Always Allow"** on that dialog adds `/usr/bin/security` to the
-item's ACL — subsequent calls for that SSID are silent. You do this once
-per saved network you care about, not per app run.
+On recent macOS versions (13+), that dialog only offers **Allow** (one-
+time) and **Deny** for these items. The legacy "Always Allow" button has
+been removed for third-party CLI access; clicking Allow does **not**
+persist a grant. **You'll see the dialog every time** you invoke
+`macwifi.Password()` for an SSID.
 
-There is no safe way for an unprivileged library to bypass this prompt;
-it's a core part of the macOS security model.
+Workarounds:
+
+- **Use `OnKeychainAccess`** to display a heads-up before the dialog, so
+  the user isn't surprised.
+- **Let the user type it manually** — cancel the dialog, prompt instead.
+- **Pre-approve via Keychain Access.app** — the GUI *does* still let you
+  edit the ACL directly: open the app, browse to System → the WiFi item
+  → Access Control tab → add `/usr/bin/security` to the allowed-apps list.
+  This is a one-time setup per SSID, and the grant persists.
+
+There is no programmatic bypass for unprivileged library code; it's a
+core part of the macOS security model. Privileged helpers (SMJobBless)
+that run as root can read System keychain items without ACL prompts, but
+installing one requires an admin password and is overkill for most use
+cases.
 
 ## Architecture
 
