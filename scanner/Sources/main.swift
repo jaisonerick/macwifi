@@ -1,10 +1,18 @@
 // WifiScanner.app — signed CoreWLAN + Keychain helper for macwifi.
 //
-// Launched via `open -W` with MACWIFI_PORT in the environment. Connects
-// back to 127.0.0.1:MACWIFI_PORT and serves request frames in a loop
-// until the Go client sends a close_request (or the connection drops).
-// The protocol is the fixed-layout binary format documented in
-// protocol.go on the Go side.
+// Launched via `open -W` with MACWIFI_PORT and MACWIFI_PARENT_PID in the
+// environment. Connects back to 127.0.0.1:MACWIFI_PORT and serves request
+// frames in a loop until the Go client sends a close_request (or the
+// connection drops, or the parent process dies).
+//
+// A background thread watches MACWIFI_PARENT_PID via kqueue(EVFILT_PROC,
+// NOTE_EXIT) and calls exit(0) the instant the Go process exits. This
+// guarantees the helper never outlives its parent — even if the parent
+// crashes, is SIGKILL'd, or the helper is stuck inside SecItemCopyMatching
+// waiting on a keychain dialog.
+//
+// Protocol: see protocol.go on the Go side for the fixed-layout binary
+// wire format.
 import CoreLocation
 import CoreWLAN
 import Darwin
@@ -334,7 +342,47 @@ func runService(port: UInt16) {
     }
 }
 
+// ─────────────────────────── parent-death watchdog ────────────────────────
+
+/// Watches pid via kqueue. Calls exit(0) the instant it observes the
+/// process exit. Fires regardless of death mode (clean, panic, SIGKILL).
+/// Runs on a detached thread so the main request loop isn't blocked.
+/// No-op if pid is invalid or already dead at setup time.
+func watchParentPID(_ pid: pid_t) {
+    let thread = Thread {
+        let kq = kqueue()
+        guard kq >= 0 else { return }
+
+        var change = kevent()
+        change.ident  = UInt(pid)
+        change.filter = Int16(EVFILT_PROC)
+        change.flags  = UInt16(EV_ADD | EV_ONESHOT)
+        change.fflags = UInt32(NOTE_EXIT)
+
+        // Register the filter. ESRCH here means the parent is already gone.
+        let n = kevent(kq, &change, 1, nil, 0, nil)
+        if n == -1 {
+            if errno == ESRCH { exit(0) }
+            return
+        }
+
+        // Race window: parent could have died between spawn and filter
+        // registration; kqueue wouldn't catch that. Re-check explicitly.
+        if kill(pid, 0) != 0, errno == ESRCH { exit(0) }
+
+        // Block until the parent exits.
+        var out = kevent()
+        if kevent(kq, nil, 0, &out, 1, nil) > 0 { exit(0) }
+    }
+    thread.start()
+}
+
 // ─────────────────────────── entry point ──────────────────────────────────
+
+if let s = ProcessInfo.processInfo.environment["MACWIFI_PARENT_PID"],
+   let pid = pid_t(s), pid > 0 {
+    watchParentPID(pid)
+}
 
 guard let portStr = ProcessInfo.processInfo.environment["MACWIFI_PORT"],
       let port = UInt16(portStr) else {

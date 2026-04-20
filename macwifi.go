@@ -134,10 +134,13 @@ func New(ctx context.Context) (*Client, error) {
 	defer listener.Close()
 	port := listener.Addr().(*net.TCPAddr).Port
 
+	// MACWIFI_PARENT_PID lets the helper watch our PID via kqueue and
+	// exit the instant we die (crash, SIGKILL, panic). Without this, a
+	// helper stuck in SecItemCopyMatching would outlive the client.
 	cmd := exec.Command("open",
 		"-W",
 		"--env", fmt.Sprintf("MACWIFI_PORT=%d", port),
-		// MACWIFI_MODE is optional; default in the helper is "service".
+		"--env", fmt.Sprintf("MACWIFI_PARENT_PID=%d", os.Getpid()),
 		appPath,
 	)
 	done := make(chan error, 1)
