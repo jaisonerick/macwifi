@@ -5,11 +5,11 @@
 // frames in a loop until the Go client sends a close_request (or the
 // connection drops, or the parent process dies).
 //
-// A background thread watches MACWIFI_PARENT_PID via kqueue(EVFILT_PROC,
-// NOTE_EXIT) and calls exit(0) the instant the Go process exits. This
-// guarantees the helper never outlives its parent — even if the parent
-// crashes, is SIGKILL'd, or the helper is stuck inside SecItemCopyMatching
-// waiting on a keychain dialog.
+// A DispatchSource watches MACWIFI_PARENT_PID for `.exit` events (kqueue
+// EVFILT_PROC / NOTE_EXIT under the hood) and calls exit(0) the instant
+// the Go process exits. This guarantees the helper never outlives its
+// parent — even if the parent crashes, is SIGKILL'd, or the helper is
+// stuck inside SecItemCopyMatching waiting on a keychain dialog.
 //
 // Protocol: see protocol.go on the Go side for the fixed-layout binary
 // wire format.
@@ -344,37 +344,28 @@ func runService(port: UInt16) {
 
 // ─────────────────────────── parent-death watchdog ────────────────────────
 
-/// Watches pid via kqueue. Calls exit(0) the instant it observes the
-/// process exit. Fires regardless of death mode (clean, panic, SIGKILL).
-/// Runs on a detached thread so the main request loop isn't blocked.
-/// No-op if pid is invalid or already dead at setup time.
+/// Stored at top-level so ARC keeps the DispatchSource alive for the
+/// whole process lifetime. A local variable would be released after
+/// watchParentPID returns, which cancels the source.
+var parentWatchdogSource: DispatchSourceProcess?
+
+/// Watches pid via Dispatch (wraps kqueue EVFILT_PROC / NOTE_EXIT). Calls
+/// exit(0) the instant the kernel reports the parent process has exited.
+/// Fires regardless of death mode (clean, panic, SIGKILL). No-op if pid
+/// is invalid or already dead at setup time.
 func watchParentPID(_ pid: pid_t) {
-    let thread = Thread {
-        let kq = kqueue()
-        guard kq >= 0 else { return }
+    let source = DispatchSource.makeProcessSource(
+        identifier: pid,
+        eventMask: .exit,
+        queue: .global(qos: .utility),
+    )
+    source.setEventHandler { exit(0) }
+    source.resume()
+    parentWatchdogSource = source
 
-        var change = kevent()
-        change.ident  = UInt(pid)
-        change.filter = Int16(EVFILT_PROC)
-        change.flags  = UInt16(EV_ADD | EV_ONESHOT)
-        change.fflags = UInt32(NOTE_EXIT)
-
-        // Register the filter. ESRCH here means the parent is already gone.
-        let n = kevent(kq, &change, 1, nil, 0, nil)
-        if n == -1 {
-            if errno == ESRCH { exit(0) }
-            return
-        }
-
-        // Race window: parent could have died between spawn and filter
-        // registration; kqueue wouldn't catch that. Re-check explicitly.
-        if kill(pid, 0) != 0, errno == ESRCH { exit(0) }
-
-        // Block until the parent exits.
-        var out = kevent()
-        if kevent(kq, nil, 0, &out, 1, nil) > 0 { exit(0) }
-    }
-    thread.start()
+    // Race: parent could have died between its spawn and our registration.
+    // Probe explicitly; Dispatch won't replay an event that already happened.
+    if kill(pid, 0) != 0, errno == ESRCH { exit(0) }
 }
 
 // ─────────────────────────── entry point ──────────────────────────────────
