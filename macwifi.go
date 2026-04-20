@@ -1,23 +1,32 @@
-// Package macwifi lists visible WiFi networks on macOS with richer
-// information than the built-in CLI tools expose — including BSSID, channel,
-// security mode, and saved Keychain passwords.
+// Package macwifi lists visible WiFi networks on macOS with rich metadata
+// (BSSID, channel, security mode, …) and reads saved passwords from the
+// System keychain. Both operations are served by a small signed Swift
+// helper app (WifiScanner.app); macOS requires a signed foreground-app
+// context for unredacted CoreWLAN scan results.
 //
-// Under the hood it launches a small signed Swift helper application
-// (WifiScanner.app) via `open -W`, which is required for macOS to give it
-// the Location Services permission needed for unredacted SSIDs. Results
-// come back over a loopback TCP socket as a binary protocol (see
-// protocol.go). See the README for how to build and install the helper.
+// Typical usage:
+//
+//	c, err := macwifi.New(ctx)
+//	if err != nil { return err }
+//	defer c.Close()
+//
+//	nets, _ := c.Scan(ctx)
+//	pw, _  := c.Password(ctx, "MyHomeWiFi",
+//	    macwifi.OnKeychainAccess(func(ssid string) { showHeadsUpDialog(ssid) }),
+//	)
+//
+// One-shot helpers (Scan, Password) wrap New+op+Close for simple cases.
 package macwifi
 
 import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sync"
 	"time"
 )
 
@@ -48,15 +57,15 @@ func (b Band) String() string {
 type Security uint8
 
 const (
-	SecurityUnknown       Security = 0
-	SecurityNone          Security = 1
-	SecurityWEP           Security = 2
-	SecurityWPA           Security = 3
-	SecurityWPA2Personal  Security = 4
-	SecurityWPA3Personal  Security = 5
+	SecurityUnknown        Security = 0
+	SecurityNone           Security = 1
+	SecurityWEP            Security = 2
+	SecurityWPA            Security = 3
+	SecurityWPA2Personal   Security = 4
+	SecurityWPA3Personal   Security = 5
 	SecurityWPA2Enterprise Security = 6
 	SecurityWPA3Enterprise Security = 7
-	SecurityOWE           Security = 8
+	SecurityOWE            Security = 8
 )
 
 func (s Security) String() string {
@@ -93,32 +102,30 @@ type Network struct {
 	ChannelWidth int    // bandwidth in MHz (20/40/80/160)
 	Security     Security
 	PHYMode      string // "802.11ax" etc.
-	Password     string // from macOS Keychain if accessible; "" otherwise
+	Password     string // always "" from Scan; use Password() separately
 	Current      bool   // connected right now
 	Saved        bool   // in the preferred-networks list
 }
 
-// Scanner is a zero-config entry point. The path to the bundled Swift helper
-// app is resolved internally — set $MACWIFI_APP to override for testing.
-type Scanner struct {
-	// Timeout bounds a single scan end-to-end. Defaults to 30s if zero.
-	Timeout time.Duration
+// Client is a live session against the scanner helper. One helper process
+// is launched on New and stays alive until Close — subsequent Scan and
+// Password calls reuse the same connection (no per-call app launch).
+type Client struct {
+	cmd   *exec.Cmd
+	conn  net.Conn
+	mu    sync.Mutex // one request at a time
+	done  chan error // cmd.Run() completion
+	closed bool
 }
 
-// Scan performs a one-shot scan and returns every network in range (plus any
-// saved-but-not-in-range networks as stub records with Saved=true).
-func (s *Scanner) Scan(ctx context.Context) ([]Network, error) {
+// New launches the helper app and returns a ready Client. Close must be
+// called to release the helper process. The passed context only bounds
+// startup; per-call timeouts are separate.
+func New(ctx context.Context) (*Client, error) {
 	appPath, err := resolveAppPath()
 	if err != nil {
 		return nil, err
 	}
-
-	timeout := s.Timeout
-	if timeout == 0 {
-		timeout = 30 * time.Second
-	}
-	ctx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
 
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -127,55 +134,175 @@ func (s *Scanner) Scan(ctx context.Context) ([]Network, error) {
 	defer listener.Close()
 	port := listener.Addr().(*net.TCPAddr).Port
 
-	args := []string{"-W", "--env", fmt.Sprintf("MACWIFI_PORT=%d", port), appPath}
+	cmd := exec.Command("open",
+		"-W",
+		"--env", fmt.Sprintf("MACWIFI_PORT=%d", port),
+		// MACWIFI_MODE is optional; default in the helper is "service".
+		appPath,
+	)
+	done := make(chan error, 1)
+	if err := cmd.Start(); err != nil {
+		return nil, fmt.Errorf("macwifi: start helper: %w", err)
+	}
+	go func() { done <- cmd.Wait() }()
 
-	cmd := exec.CommandContext(ctx, "open", args...)
-	launchErr := make(chan error, 1)
-	go func() { launchErr <- cmd.Run() }()
-
-	deadline, _ := ctx.Deadline()
-	if tcpL, ok := listener.(*net.TCPListener); ok {
-		_ = tcpL.SetDeadline(deadline)
+	// Wait for the helper to connect back. Bound startup time; 30s covers
+	// a first-time Location Services prompt the user has to answer.
+	startupCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	if d, ok := startupCtx.Deadline(); ok {
+		_ = listener.(*net.TCPListener).SetDeadline(d)
 	}
 
 	conn, err := listener.Accept()
 	if err != nil {
-		select {
-		case lerr := <-launchErr:
-			if lerr != nil {
-				return nil, fmt.Errorf("macwifi: helper exited without connecting: %w", lerr)
-			}
-		default:
-		}
-		return nil, fmt.Errorf("macwifi: accept helper connection: %w", err)
+		_ = cmd.Process.Kill()
+		<-done
+		return nil, fmt.Errorf("macwifi: waiting for helper to connect: %w", err)
 	}
-	defer conn.Close()
-	_ = conn.SetReadDeadline(deadline)
 
-	nets, err := decodeScanResponse(conn)
-	// Drain launch goroutine.
-	if lerr := <-launchErr; lerr != nil && err == nil {
-		// The helper connected and wrote but exited non-zero. Surface only
-		// if we don't already have a decoded error.
-		return nil, fmt.Errorf("macwifi: helper: %w", lerr)
-	}
-	if err != nil {
-		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
-			return nil, fmt.Errorf("macwifi: helper closed before sending results")
-		}
-		return nil, fmt.Errorf("macwifi: decode: %w", err)
-	}
-	return nets, nil
+	return &Client{cmd: cmd, conn: conn, done: done}, nil
 }
 
-// resolveAppPath finds WifiScanner.app, in order:
-//  1. $MACWIFI_APP (full path) — escape hatch for testing.
-//  2. <executable dir>/../share/macwifi/WifiScanner.app
-//  3. $HOME/.local/share/macwifi/WifiScanner.app
-//  4. /usr/local/share/macwifi/WifiScanner.app
-//
-// Intentionally not exported: picking the helper binary is a library
-// concern, not a caller concern.
+// Scan requests a one-shot scan and returns the decoded result.
+func (c *Client) Scan(ctx context.Context) ([]Network, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.closed {
+		return nil, errors.New("macwifi: client closed")
+	}
+	if err := setDeadline(c.conn, ctx); err != nil {
+		return nil, err
+	}
+	if err := writeScanRequest(c.conn); err != nil {
+		return nil, fmt.Errorf("macwifi: write scan request: %w", err)
+	}
+	msgType, err := readHeader(c.conn)
+	if err != nil {
+		return nil, fmt.Errorf("macwifi: read scan response: %w", err)
+	}
+	if msgType != msgTypeScanResponse {
+		return nil, fmt.Errorf("macwifi: expected scan_response, got 0x%02x", msgType)
+	}
+	return decodeScanResponse(c.conn)
+}
+
+// Password requests a saved WiFi password for ssid. Returns "" (no error)
+// if there is no saved entry. The helper runs SecItemCopyMatching, which
+// may cause macOS to show its own Allow/Deny dialog — use OnKeychainAccess
+// to display a TUI heads-up before that happens.
+func (c *Client) Password(ctx context.Context, ssid string, opts ...PasswordOption) (string, error) {
+	cfg := &passwordConfig{timeout: 60 * time.Second}
+	for _, opt := range opts {
+		opt(cfg)
+	}
+	if cfg.beforeAccess != nil {
+		cfg.beforeAccess(ssid)
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.closed {
+		return "", errors.New("macwifi: client closed")
+	}
+
+	// Use the larger of ctx deadline and cfg.timeout — the helper may sit
+	// inside SecItemCopyMatching for however long the user takes to answer
+	// the system dialog.
+	callCtx, cancel := context.WithTimeout(ctx, cfg.timeout)
+	defer cancel()
+	if err := setDeadline(c.conn, callCtx); err != nil {
+		return "", err
+	}
+	if err := writePasswordRequest(c.conn, ssid); err != nil {
+		return "", fmt.Errorf("macwifi: write password request: %w", err)
+	}
+	msgType, err := readHeader(c.conn)
+	if err != nil {
+		return "", fmt.Errorf("macwifi: read password response: %w", err)
+	}
+	if msgType != msgTypePasswordResponse {
+		return "", fmt.Errorf("macwifi: expected password_response, got 0x%02x", msgType)
+	}
+	return decodePasswordResponse(c.conn)
+}
+
+// Close sends a clean shutdown request to the helper, closes the socket,
+// and waits for the helper process to exit. Safe to call multiple times.
+func (c *Client) Close() error {
+	c.mu.Lock()
+	if c.closed {
+		c.mu.Unlock()
+		return nil
+	}
+	c.closed = true
+	_ = writeCloseRequest(c.conn)
+	_ = c.conn.Close()
+	c.mu.Unlock()
+
+	// Wait for the helper to exit, bounded.
+	select {
+	case <-c.done:
+	case <-time.After(5 * time.Second):
+		_ = c.cmd.Process.Kill()
+		<-c.done
+	}
+	return nil
+}
+
+// Scan is a one-shot helper: New → Scan → Close.
+func Scan(ctx context.Context) ([]Network, error) {
+	c, err := New(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer c.Close()
+	return c.Scan(ctx)
+}
+
+// Password is a one-shot helper: New → Password → Close. Prefer New/Close
+// + multiple calls if you know you'll do more than one operation.
+func Password(ctx context.Context, ssid string, opts ...PasswordOption) (string, error) {
+	c, err := New(ctx)
+	if err != nil {
+		return "", err
+	}
+	defer c.Close()
+	return c.Password(ctx, ssid, opts...)
+}
+
+// PasswordOption configures a Password call.
+type PasswordOption func(*passwordConfig)
+
+type passwordConfig struct {
+	beforeAccess func(ssid string)
+	timeout      time.Duration
+}
+
+// OnKeychainAccess registers fn to run just before the helper calls
+// SecItemCopyMatching, which is typically when macOS will pop its Keychain
+// access dialog. Callback runs synchronously; Password blocks until fn
+// returns.
+func OnKeychainAccess(fn func(ssid string)) PasswordOption {
+	return func(c *passwordConfig) { c.beforeAccess = fn }
+}
+
+// WithTimeout bounds a single Password call. Defaults to 60s (generous to
+// leave room for the user reading the macOS dialog).
+func WithTimeout(d time.Duration) PasswordOption {
+	return func(c *passwordConfig) { c.timeout = d }
+}
+
+// ─────────────────────────── internals ────────────────────────────────────
+
+func setDeadline(c net.Conn, ctx context.Context) error {
+	d, ok := ctx.Deadline()
+	if !ok {
+		return c.SetDeadline(time.Time{})
+	}
+	return c.SetDeadline(d)
+}
+
 func resolveAppPath() (string, error) {
 	if p := os.Getenv("MACWIFI_APP"); p != "" {
 		if _, err := os.Stat(p); err == nil {

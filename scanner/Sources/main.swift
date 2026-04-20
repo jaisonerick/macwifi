@@ -1,54 +1,107 @@
-// WifiScanner.app — signed CoreWLAN scanner for the macwifi Go library.
+// WifiScanner.app — signed CoreWLAN + Keychain helper for macwifi.
 //
-// Runs under LaunchServices (invoked via `open -W`) so macOS grants it
-// foreground-app status, unlocking unredacted SSIDs. Connects back to the
-// Go listener on 127.0.0.1:$MACWIFI_PORT and writes a binary protocol
-// message; see protocol.go in the macwifi Go package for the wire layout.
-//
-// The app has two modes, selected by environment variable:
-//
-//   MACWIFI_MODE=scan      (default) — CoreWLAN scan, needs Location Services
-//   MACWIFI_MODE=password  — read one saved WiFi password from System keychain
-//                           (triggers macOS's Keychain "Allow access" dialog)
-//
-// In both modes, the result is written to a loopback TCP connection
-// established against MACWIFI_PORT in the calling process (see protocol.go
-// in the Go library for the binary wire format).
+// Launched via `open -W` with MACWIFI_PORT in the environment. Connects
+// back to 127.0.0.1:MACWIFI_PORT and serves request frames in a loop
+// until the Go client sends a close_request (or the connection drops).
+// The protocol is the fixed-layout binary format documented in
+// protocol.go on the Go side.
 import CoreLocation
 import CoreWLAN
 import Darwin
 import Foundation
 import Security
 
-// ─────────────────────────── location authorization ────────────────────────
+// ─────────────────────────── helpers: binary IO ────────────────────────────
 
-final class LocationDelegate: NSObject, CLLocationManagerDelegate {
-    var changed = false
-    func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
-        changed = true
+struct BinaryWriter {
+    private(set) var data = Data()
+    mutating func putU8(_ v: UInt8)     { data.append(v) }
+    mutating func putU16LE(_ v: UInt16) { var x = v.littleEndian; withUnsafeBytes(of: &x) { data.append(contentsOf: $0) } }
+    mutating func putU32LE(_ v: UInt32) { var x = v.littleEndian; withUnsafeBytes(of: &x) { data.append(contentsOf: $0) } }
+    mutating func putI16LE(_ v: Int16)  { putU16LE(UInt16(bitPattern: v)) }
+    mutating func putMagic(_ s: String) { data.append(s.data(using: .ascii)!) }
+    mutating func putString8(_ s: String) {
+        let b = Array(s.utf8); precondition(b.count <= 0xFF)
+        putU8(UInt8(b.count)); data.append(contentsOf: b)
+    }
+    mutating func putString16(_ s: String) {
+        let b = Array(s.utf8); precondition(b.count <= 0xFFFF)
+        putU16LE(UInt16(b.count)); data.append(contentsOf: b)
+    }
+    mutating func putBytes8(_ b: Data) {
+        precondition(b.count <= 0xFF); putU8(UInt8(b.count)); data.append(b)
     }
 }
 
-func ensureAuthorized() throws {
-    let manager = CLLocationManager()
-    let delegate = LocationDelegate()
-    manager.delegate = delegate
+/// Reads exactly `n` bytes or throws on EOF / IO error.
+func readExact(_ fd: Int32, _ n: Int) -> Data? {
+    var out = Data(count: n)
+    var got = 0
+    while got < n {
+        let r = out.withUnsafeMutableBytes { raw -> Int in
+            Darwin.read(fd, raw.baseAddress!.advanced(by: got), n - got)
+        }
+        if r <= 0 { return nil }
+        got += r
+    }
+    return out
+}
 
-    var status = manager.authorizationStatus
-    if status == .notDetermined {
-        manager.requestAlwaysAuthorization()
+func readU8(_ fd: Int32) -> UInt8? {
+    guard let d = readExact(fd, 1) else { return nil }
+    return d[0]
+}
+
+func readU16LE(_ fd: Int32) -> UInt16? {
+    guard let d = readExact(fd, 2) else { return nil }
+    return UInt16(d[0]) | (UInt16(d[1]) << 8)
+}
+
+func readString16(_ fd: Int32) -> String? {
+    guard let n = readU16LE(fd) else { return nil }
+    if n == 0 { return "" }
+    guard let d = readExact(fd, Int(n)) else { return nil }
+    return String(data: d, encoding: .utf8)
+}
+
+func writeAll(_ fd: Int32, _ data: Data) -> Bool {
+    var written = 0
+    let total = data.count
+    return data.withUnsafeBytes { raw -> Bool in
+        while written < total {
+            let w = Darwin.write(fd, raw.baseAddress!.advanced(by: written), total - written)
+            if w <= 0 { return false }
+            written += w
+        }
+        return true
+    }
+}
+
+// ─────────────────────────── location authorization ────────────────────────
+
+final class LocationDelegate: NSObject, CLLocationManagerDelegate {
+    func locationManagerDidChangeAuthorization(_ m: CLLocationManager) {}
+}
+
+enum ScanError: Error { case message(String) }
+
+func ensureAuthorized() throws {
+    let m = CLLocationManager()
+    let d = LocationDelegate()
+    m.delegate = d
+    var s = m.authorizationStatus
+    if s == .notDetermined {
+        m.requestAlwaysAuthorization()
         let deadline = Date().addingTimeInterval(60)
-        while manager.authorizationStatus == .notDetermined, Date() < deadline {
+        while m.authorizationStatus == .notDetermined, Date() < deadline {
             RunLoop.current.run(until: Date().addingTimeInterval(0.25))
         }
-        status = manager.authorizationStatus
+        s = m.authorizationStatus
     }
-
-    switch status {
-    case .authorizedAlways, .authorizedWhenInUse:
-        return
+    switch s {
+    case .authorizedAlways, .authorizedWhenInUse: return
     case .denied, .restricted:
-        throw ScanError.message("Location Services denied. Grant access in System Settings → Privacy & Security → Location Services.")
+        throw ScanError.message("Location Services denied.")
     case .notDetermined:
         throw ScanError.message("Location Services authorization timed out.")
     @unknown default:
@@ -56,11 +109,11 @@ func ensureAuthorized() throws {
     }
 }
 
-// ─────────────────────────── scan types + mapping ──────────────────────────
+// ─────────────────────────── scan ──────────────────────────────────────────
 
 struct ScannedNetwork {
     var ssid: String
-    var bssid: Data            // 0 or 6 bytes
+    var bssid: Data
     var rssi: Int16
     var noise: Int16
     var channel: UInt16
@@ -73,113 +126,53 @@ struct ScannedNetwork {
     var saved: Bool
 }
 
-enum ScanError: Error {
-    case message(String)
-}
-
-// Map CWChannelBand (Apple enum) → our wire value.
 func mapBand(_ b: CWChannelBand) -> UInt8 {
-    switch b.rawValue {
-    case 1: return 1  // 2.4 GHz
-    case 2: return 2  // 5 GHz
-    case 3: return 3  // 6 GHz
-    default: return 0
-    }
+    switch b.rawValue { case 1: return 1; case 2: return 2; case 3: return 3; default: return 0 }
 }
-
-// Map CWChannelWidth → MHz.
 func mapWidth(_ w: CWChannelWidth) -> UInt16 {
-    switch w.rawValue {
-    case 0: return 20
-    case 1: return 40
-    case 2: return 80
-    case 3: return 160
-    default: return 0
-    }
+    switch w.rawValue { case 0: return 20; case 1: return 40; case 2: return 80; case 3: return 160; default: return 0 }
 }
-
-// Detect a network's security mode. CWNetwork doesn't expose a single
-// property for this on recent SDKs — instead it answers supportsSecurity for
-// each CWSecurity case. Query in "most specific wins" order.
 func detectSecurity(_ n: CWNetwork) -> UInt8 {
-    // Ordered strongest/most-specific → weakest.
     let probes: [(CWSecurity, UInt8)] = [
-        (.wpa3Enterprise,      7),
-        (.wpa3Personal,        5),
-        (.wpa3Transition,      5),
-        (.wpa2Enterprise,      6),
-        (.wpa2Personal,        4),
-        (.personal,            4),   // mixed WPA/WPA2
-        (.wpaEnterprise,       6),
-        (.wpaEnterpriseMixed,  6),
-        (.wpaPersonal,         3),
-        (.wpaPersonalMixed,    3),
-        (.enterprise,          6),
-        (.dynamicWEP,          2),
-        (.WEP,                 2),
-        (.none,                1),
+        (.wpa3Enterprise, 7), (.wpa3Personal, 5), (.wpa3Transition, 5),
+        (.wpa2Enterprise, 6), (.wpa2Personal, 4), (.personal, 4),
+        (.wpaEnterprise, 6), (.wpaEnterpriseMixed, 6),
+        (.wpaPersonal, 3), (.wpaPersonalMixed, 3),
+        (.enterprise, 6), (.dynamicWEP, 2), (.WEP, 2), (.none, 1),
     ]
-    for (mode, wire) in probes where n.supportsSecurity(mode) {
-        return wire
-    }
+    for (mode, wire) in probes where n.supportsSecurity(mode) { return wire }
     return 0
 }
-
-// Map CWPHYMode → "802.11.." label.
-func mapPHYMode(_ p: CWPHYMode) -> String {
-    switch p.rawValue {
-    case 1: return "802.11a"
-    case 2: return "802.11b"
-    case 3: return "802.11g"
-    case 4: return "802.11n"
-    case 5: return "802.11ac"
-    case 6: return "802.11ax"
-    default: return ""
-    }
-}
-
-// Parse a BSSID string ("aa:bb:cc:dd:ee:ff") into 6 raw bytes.
 func parseBSSID(_ s: String?) -> Data {
     guard let s = s else { return Data() }
     let parts = s.split(separator: ":")
     guard parts.count == 6 else { return Data() }
-    var bytes = Data(capacity: 6)
-    for p in parts {
-        guard let b = UInt8(p, radix: 16) else { return Data() }
-        bytes.append(b)
-    }
-    return bytes
+    var b = Data(capacity: 6)
+    for p in parts { guard let v = UInt8(p, radix: 16) else { return Data() }; b.append(v) }
+    return b
 }
-
-// ─────────────────────────── scan orchestration ────────────────────────────
-
 func preferredNetworkSSIDs() -> Set<String> {
-    let proc = Process()
-    proc.executableURL = URL(fileURLWithPath: "/usr/sbin/networksetup")
-    proc.arguments = ["-listpreferredwirelessnetworks", "en0"]
+    let p = Process()
+    p.executableURL = URL(fileURLWithPath: "/usr/sbin/networksetup")
+    p.arguments = ["-listpreferredwirelessnetworks", "en0"]
     let pipe = Pipe()
-    proc.standardOutput = pipe
-    proc.standardError = Pipe()
-    do { try proc.run() } catch { return [] }
-    proc.waitUntilExit()
+    p.standardOutput = pipe; p.standardError = Pipe()
+    do { try p.run() } catch { return [] }
+    p.waitUntilExit()
     guard let out = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) else { return [] }
     var set = Set<String>()
     for line in out.split(separator: "\n") {
         let s = String(line)
-        if s.hasPrefix("\t") {
-            set.insert(String(s.dropFirst()))
-        }
+        if s.hasPrefix("\t") { set.insert(String(s.dropFirst())) }
     }
     return set
 }
 
 func runScan() throws -> [ScannedNetwork] {
     try ensureAuthorized()
-
     guard let iface = CWWiFiClient.shared().interface() else {
         throw ScanError.message("no WiFi interface available")
     }
-
     let scanned: Set<CWNetwork>
     do { scanned = try iface.scanForNetworks(withName: nil) }
     catch { throw ScanError.message("scan failed: \(error.localizedDescription)") }
@@ -187,7 +180,6 @@ func runScan() throws -> [ScannedNetwork] {
     let saved = preferredNetworkSSIDs()
     let currentSSID = iface.ssid()
 
-    // Deduplicate by SSID, keep the strongest-signal entry per name.
     var byName: [String: CWNetwork] = [:]
     for n in scanned {
         guard let ssid = n.ssid, !ssid.isEmpty else { continue }
@@ -201,156 +193,47 @@ func runScan() throws -> [ScannedNetwork] {
     for (ssid, n) in byName {
         let ch = n.wlanChannel
         out.append(ScannedNetwork(
-            ssid: ssid,
-            bssid: parseBSSID(n.bssid),
+            ssid: ssid, bssid: parseBSSID(n.bssid),
             rssi: Int16(clamping: n.rssiValue),
             noise: Int16(clamping: n.noiseMeasurement),
             channel: UInt16(clamping: ch?.channelNumber ?? 0),
             band: ch.map { mapBand($0.channelBand) } ?? 0,
             channelWidth: ch.map { mapWidth($0.channelWidth) } ?? 0,
             security: detectSecurity(n),
-            phyMode: "",  // CWNetwork doesn't expose PHY mode directly; interface-level only
-            password: "",  // looked up in Go via /usr/bin/security
-            current: currentSSID == ssid,
-            saved: saved.contains(ssid)
+            phyMode: "", password: "",
+            current: currentSSID == ssid, saved: saved.contains(ssid)
         ))
     }
-
-    // Add saved-but-not-scanned networks as stubs.
     for ssid in saved where byName[ssid] == nil {
         out.append(ScannedNetwork(
-            ssid: ssid,
-            bssid: Data(),
+            ssid: ssid, bssid: Data(),
             rssi: 0, noise: 0, channel: 0, band: 0, channelWidth: 0,
             security: 0, phyMode: "", password: "",
             current: currentSSID == ssid, saved: true
         ))
     }
-
-    // Sort: stronger RSSI first (0 for stubs sorts to the end).
     out.sort { ($0.rssi == 0 ? -999 : Int($0.rssi)) > ($1.rssi == 0 ? -999 : Int($1.rssi)) }
     return out
 }
 
-// ─────────────────────────── binary encoder ────────────────────────────────
+// ─────────────────────────── keychain ──────────────────────────────────────
 
-struct BinaryWriter {
-    private(set) var data = Data()
-
-    mutating func putU8(_ v: UInt8)   { data.append(v) }
-    mutating func putU16LE(_ v: UInt16) { var x = v.littleEndian; withUnsafeBytes(of: &x) { data.append(contentsOf: $0) } }
-    mutating func putU32LE(_ v: UInt32) { var x = v.littleEndian; withUnsafeBytes(of: &x) { data.append(contentsOf: $0) } }
-    mutating func putI16LE(_ v: Int16)  { putU16LE(UInt16(bitPattern: v)) }
-
-    mutating func putMagic(_ s: String) { data.append(s.data(using: .ascii)!) }
-    mutating func putString8(_ s: String) {
-        let b = Array(s.utf8)
-        precondition(b.count <= 0xFF)
-        putU8(UInt8(b.count))
-        data.append(contentsOf: b)
-    }
-    mutating func putString16(_ s: String) {
-        let b = Array(s.utf8)
-        precondition(b.count <= 0xFFFF)
-        putU16LE(UInt16(b.count))
-        data.append(contentsOf: b)
-    }
-    mutating func putBytes8(_ b: Data) {
-        precondition(b.count <= 0xFF)
-        putU8(UInt8(b.count))
-        data.append(b)
-    }
-}
-
-func encodeScanResponse(networks: [ScannedNetwork], error: String) -> Data {
-    var w = BinaryWriter()
-    w.putMagic("MWIF")
-    w.putU8(1)           // version
-    w.putU8(0x01)        // msg type = scan_response
-    w.putString16(error)
-    w.putU32LE(UInt32(networks.count))
-
-    for n in networks {
-        w.putString16(n.ssid)
-        w.putBytes8(n.bssid)
-        w.putI16LE(n.rssi)
-        w.putI16LE(n.noise)
-        w.putU16LE(n.channel)
-        w.putU8(n.band)
-        w.putU16LE(n.channelWidth)
-        w.putU8(n.security)
-        w.putString8(n.phyMode)
-        w.putString16(n.password)
-        var flags: UInt8 = 0
-        if n.current { flags |= 0x01 }
-        if n.saved   { flags |= 0x02 }
-        w.putU8(flags)
-    }
-    return w.data
-}
-
-func encodePasswordResponse(password: String, error: String) -> Data {
-    var w = BinaryWriter()
-    w.putMagic("MWIF")
-    w.putU8(1)           // version
-    w.putU8(0x02)        // msg type = password_response
-    w.putString16(error)
-    w.putString16(password)
-    return w.data
-}
-
-// ─────────────────────────── IPC / entry point ─────────────────────────────
-
-func sendPayload(_ data: Data) {
-    if let portStr = ProcessInfo.processInfo.environment["MACWIFI_PORT"],
-       let port = UInt16(portStr),
-       let sock = connectLoopback(port: port) {
-        sock.write(data)
-        try? sock.close()
-    } else {
-        // Fallback: write to stdout (useful for manual invocation via `open -W --stdout`).
-        FileHandle.standardOutput.write(data)
-    }
-}
-
-func connectLoopback(port: UInt16) -> FileHandle? {
-    let fd = socket(AF_INET, SOCK_STREAM, 0)
-    guard fd >= 0 else { return nil }
-
-    var addr = sockaddr_in()
-    addr.sin_family = sa_family_t(AF_INET)
-    addr.sin_port = port.bigEndian
-    addr.sin_addr.s_addr = inet_addr("127.0.0.1")
-
-    let rc = withUnsafePointer(to: &addr) { p -> Int32 in
-        p.withMemoryRebound(to: sockaddr.self, capacity: 1) { sa in
-            Darwin.connect(fd, sa, socklen_t(MemoryLayout<sockaddr_in>.size))
-        }
-    }
-    guard rc == 0 else { close(fd); return nil }
-    return FileHandle(fileDescriptor: fd, closeOnDealloc: true)
-}
-
-// ─────────────────────────── keychain lookup ───────────────────────────────
-
-func keychainPassword(ssid: String) -> (String, String?) {
+func keychainPassword(ssid: String) -> (String, String) {
     let query: [String: Any] = [
-        kSecClass as String:         kSecClassGenericPassword,
-        kSecAttrDescription as String: "AirPort network password",
-        kSecAttrAccount as String:    ssid,
-        kSecReturnData as String:     true,
-        kSecMatchLimit as String:     kSecMatchLimitOne,
+        kSecClass as String:            kSecClassGenericPassword,
+        kSecAttrDescription as String:  "AirPort network password",
+        kSecAttrAccount as String:      ssid,
+        kSecReturnData as String:       true,
+        kSecMatchLimit as String:       kSecMatchLimitOne,
     ]
     var result: CFTypeRef?
     let status = SecItemCopyMatching(query as CFDictionary, &result)
     switch status {
     case errSecSuccess:
-        if let data = result as? Data, let s = String(data: data, encoding: .utf8) {
-            return (s, nil)
-        }
+        if let data = result as? Data, let s = String(data: data, encoding: .utf8) { return (s, "") }
         return ("", "keychain returned non-utf8 data")
     case errSecItemNotFound:
-        return ("", nil)   // empty, no error
+        return ("", "")
     case errSecUserCanceled:
         return ("", "user declined keychain access")
     default:
@@ -358,33 +241,105 @@ func keychainPassword(ssid: String) -> (String, String?) {
     }
 }
 
-// Main.
-let mode = ProcessInfo.processInfo.environment["MACWIFI_MODE"] ?? "scan"
+// ─────────────────────────── encoders ──────────────────────────────────────
 
-switch mode {
-case "scan":
+func encodeScanResponse(networks: [ScannedNetwork], error: String) -> Data {
+    var w = BinaryWriter()
+    w.putMagic("MWIF"); w.putU8(1); w.putU8(0x01)
+    w.putString16(error)
+    w.putU32LE(UInt32(networks.count))
+    for n in networks {
+        w.putString16(n.ssid); w.putBytes8(n.bssid)
+        w.putI16LE(n.rssi);   w.putI16LE(n.noise)
+        w.putU16LE(n.channel); w.putU8(n.band); w.putU16LE(n.channelWidth)
+        w.putU8(n.security);   w.putString8(n.phyMode)
+        w.putString16(n.password)
+        var f: UInt8 = 0
+        if n.current { f |= 0x01 }; if n.saved { f |= 0x02 }
+        w.putU8(f)
+    }
+    return w.data
+}
+
+func encodePasswordResponse(password: String, error: String) -> Data {
+    var w = BinaryWriter()
+    w.putMagic("MWIF"); w.putU8(1); w.putU8(0x02)
+    w.putString16(error)
+    w.putString16(password)
+    return w.data
+}
+
+// ─────────────────────────── connection + service loop ─────────────────────
+
+func connectLoopback(port: UInt16) -> Int32? {
+    let fd = Darwin.socket(AF_INET, SOCK_STREAM, 0)
+    guard fd >= 0 else { return nil }
+    var addr = sockaddr_in()
+    addr.sin_family = sa_family_t(AF_INET)
+    addr.sin_port = port.bigEndian
+    addr.sin_addr.s_addr = inet_addr("127.0.0.1")
+    let rc = withUnsafePointer(to: &addr) { p -> Int32 in
+        p.withMemoryRebound(to: sockaddr.self, capacity: 1) { sa in
+            Darwin.connect(fd, sa, socklen_t(MemoryLayout<sockaddr_in>.size))
+        }
+    }
+    if rc != 0 { Darwin.close(fd); return nil }
+    return fd
+}
+
+func handleScan(fd: Int32) {
+    let nets: [ScannedNetwork]
+    let err: String
     do {
-        let networks = try runScan()
-        sendPayload(encodeScanResponse(networks: networks, error: ""))
-    } catch ScanError.message(let msg) {
-        sendPayload(encodeScanResponse(networks: [], error: msg))
-        exit(2)
+        nets = try runScan()
+        err = ""
+    } catch ScanError.message(let m) {
+        nets = []; err = m
     } catch {
-        sendPayload(encodeScanResponse(networks: [], error: "\(error)"))
+        nets = []; err = "\(error)"
+    }
+    _ = writeAll(fd, encodeScanResponse(networks: nets, error: err))
+}
+
+func handlePassword(fd: Int32) -> Bool {
+    guard let ssid = readString16(fd) else { return false }
+    let (pw, err) = keychainPassword(ssid: ssid)
+    return writeAll(fd, encodePasswordResponse(password: pw, error: err))
+}
+
+func runService(port: UInt16) {
+    guard let fd = connectLoopback(port: port) else {
+        FileHandle.standardError.write("could not connect to 127.0.0.1:\(port)\n".data(using: .utf8)!)
         exit(1)
     }
+    defer { Darwin.close(fd) }
 
-case "password":
-    let ssid = ProcessInfo.processInfo.environment["MACWIFI_SSID"] ?? ""
-    if ssid.isEmpty {
-        sendPayload(encodePasswordResponse(password: "", error: "MACWIFI_SSID is empty"))
-        exit(2)
+    loop: while true {
+        // Expect a header: 4 magic + 1 version + 1 msgType
+        guard let magic = readExact(fd, 4), String(data: magic, encoding: .ascii) == "MWIF" else { break }
+        guard let version = readU8(fd), version == 1 else { break }
+        guard let msgType = readU8(fd) else { break }
+
+        switch msgType {
+        case 0x10: // scan_request
+            handleScan(fd: fd)
+        case 0x11: // password_request
+            if !handlePassword(fd: fd) { break loop }
+        case 0x1F: // close_request
+            break loop
+        default:
+            FileHandle.standardError.write("unknown msgType 0x\(String(msgType, radix: 16))\n".data(using: .utf8)!)
+            break loop
+        }
     }
-    let (pw, err) = keychainPassword(ssid: ssid)
-    sendPayload(encodePasswordResponse(password: pw, error: err ?? ""))
-    if err != nil { exit(2) }
-
-default:
-    sendPayload(encodeScanResponse(networks: [], error: "unknown MACWIFI_MODE=\(mode)"))
-    exit(2)
 }
+
+// ─────────────────────────── entry point ──────────────────────────────────
+
+guard let portStr = ProcessInfo.processInfo.environment["MACWIFI_PORT"],
+      let port = UInt16(portStr) else {
+    FileHandle.standardError.write("MACWIFI_PORT not set\n".data(using: .utf8)!)
+    exit(1)
+}
+
+runService(port: port)

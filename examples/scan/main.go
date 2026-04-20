@@ -18,8 +18,10 @@ func main() {
 	showPw := flag.String("password", "", "look up Keychain password for this SSID and print it")
 	flag.Parse()
 
+	ctx := context.Background()
+
 	if *showPw != "" {
-		pw, err := macwifi.Password(*showPw, macwifi.OnKeychainAccess(func(ssid string) {
+		pw, err := macwifi.Password(ctx, *showPw, macwifi.OnKeychainAccess(func(ssid string) {
 			fmt.Fprintf(os.Stderr, "→ macOS may prompt for Keychain access to %q\n", ssid)
 		}))
 		if err != nil {
@@ -34,8 +36,7 @@ func main() {
 		return
 	}
 
-	scanner := &macwifi.Scanner{}
-	nets, err := scanner.Scan(context.Background())
+	nets, err := macwifi.Scan(ctx)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "scan:", err)
 		os.Exit(1)

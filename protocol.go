@@ -1,14 +1,25 @@
 package macwifi
 
-// Binary wire protocol between the Go library and the signed Swift helper.
+// Wire protocol between the Go client and the signed Swift helper.
 //
-//   header  := "MWIF" | u8 version | u8 msgType | u16 errLen | errLen·utf8 | u32 count
-//   network := u16 ssidLen | ssid | u8 bssidLen | bssid | i16 rssi | i16 noise |
-//              u16 channel | u8 band | u16 width | u8 security |
-//              u8 phyLen | phy | u16 pwdLen | pwd | u8 flags
+// Connections are bidirectional: once the helper connects back to the Go
+// listener, either side may send frames. In practice, Go sends request
+// frames and the helper replies with response frames — one response per
+// request, in order.
 //
-// All multi-byte integers are little-endian. Strings are UTF-8. `pwd` is empty
-// if the Keychain lookup declined or the network has no saved password.
+// Frame header (every message):
+//
+//	"MWIF" | u8 version=1 | u8 msgType | body
+//
+// Body layout depends on msgType:
+//
+//	0x10 scan_request      (empty)
+//	0x11 password_request  u16 ssidLen | ssid
+//	0x1F close_request     (empty)
+//	0x01 scan_response     u16 errLen | errMsg | u32 count | networks
+//	0x02 password_response u16 errLen | errMsg | u16 pwdLen | pwd
+//
+// All multi-byte integers little-endian. Strings are UTF-8.
 
 import (
 	"encoding/binary"
@@ -23,6 +34,9 @@ const (
 
 	msgTypeScanResponse     = 0x01
 	msgTypePasswordResponse = 0x02
+	msgTypeScanRequest      = 0x10
+	msgTypePasswordRequest  = 0x11
+	msgTypeCloseRequest     = 0x1F
 
 	flagCurrent = 1 << 0
 	flagSaved   = 1 << 1
@@ -30,9 +44,33 @@ const (
 
 var byteOrder = binary.LittleEndian
 
-// readHeader reads the MWIF magic/version/msgType/errLen/errMsg prefix from
-// r. Returns the message type (for the caller to dispatch body parsing) or
-// the server-reported error.
+// writeRequest writes a request frame to the helper.
+func writeRequest(w io.Writer, msgType uint8, body []byte) error {
+	buf := make([]byte, 0, 6+len(body))
+	buf = append(buf, protocolMagic...)
+	buf = append(buf, protocolVersion, msgType)
+	buf = append(buf, body...)
+	_, err := w.Write(buf)
+	return err
+}
+
+func writeScanRequest(w io.Writer) error {
+	return writeRequest(w, msgTypeScanRequest, nil)
+}
+
+func writePasswordRequest(w io.Writer, ssid string) error {
+	body := make([]byte, 2+len(ssid))
+	byteOrder.PutUint16(body[:2], uint16(len(ssid)))
+	copy(body[2:], ssid)
+	return writeRequest(w, msgTypePasswordRequest, body)
+}
+
+func writeCloseRequest(w io.Writer) error {
+	return writeRequest(w, msgTypeCloseRequest, nil)
+}
+
+// readHeader reads the "MWIF"|version|msgType prefix. The caller then
+// dispatches on msgType to parse the body.
 func readHeader(r io.Reader) (msgType uint8, err error) {
 	var magic [4]byte
 	if _, err := io.ReadFull(r, magic[:]); err != nil {
@@ -51,28 +89,30 @@ func readHeader(r io.Reader) (msgType uint8, err error) {
 	if err := readInt(r, &msgType); err != nil {
 		return 0, err
 	}
-	var errLen uint16
-	if err := readInt(r, &errLen); err != nil {
-		return 0, err
-	}
-	if errLen > 0 {
-		buf := make([]byte, errLen)
-		if _, err := io.ReadFull(r, buf); err != nil {
-			return 0, fmt.Errorf("read error message: %w", err)
-		}
-		return msgType, errors.New(string(buf))
-	}
 	return msgType, nil
 }
 
-// decodeScanResponse reads a scan-response message and returns the networks.
-func decodeScanResponse(r io.Reader) ([]Network, error) {
-	msgType, err := readHeader(r)
-	if err != nil {
-		return nil, err
+// readError reads the leading u16 errLen | errMsg from a response body.
+// Returns a non-nil error if the server reported one.
+func readError(r io.Reader) error {
+	var n uint16
+	if err := readInt(r, &n); err != nil {
+		return err
 	}
-	if msgType != msgTypeScanResponse {
-		return nil, fmt.Errorf("expected scan_response (0x01), got 0x%02x", msgType)
+	if n == 0 {
+		return nil
+	}
+	buf := make([]byte, n)
+	if _, err := io.ReadFull(r, buf); err != nil {
+		return fmt.Errorf("read error message: %w", err)
+	}
+	return errors.New(string(buf))
+}
+
+// decodeScanResponse reads a scan-response body (header already consumed).
+func decodeScanResponse(r io.Reader) ([]Network, error) {
+	if err := readError(r); err != nil {
+		return nil, err
 	}
 	var count uint32
 	if err := readInt(r, &count); err != nil {
@@ -89,14 +129,10 @@ func decodeScanResponse(r io.Reader) ([]Network, error) {
 	return nets, nil
 }
 
-// decodePasswordResponse reads a password-response message.
+// decodePasswordResponse reads a password-response body (header already consumed).
 func decodePasswordResponse(r io.Reader) (string, error) {
-	msgType, err := readHeader(r)
-	if err != nil {
+	if err := readError(r); err != nil {
 		return "", err
-	}
-	if msgType != msgTypePasswordResponse {
-		return "", fmt.Errorf("expected password_response (0x02), got 0x%02x", msgType)
 	}
 	return readString16(r)
 }
@@ -174,9 +210,7 @@ func decodeNetwork(r io.Reader) (Network, error) {
 	return n, nil
 }
 
-func readInt(r io.Reader, v any) error {
-	return binary.Read(r, byteOrder, v)
-}
+func readInt(r io.Reader, v any) error { return binary.Read(r, byteOrder, v) }
 
 func readBytes8(r io.Reader) ([]byte, error) {
 	var n uint8

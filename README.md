@@ -9,6 +9,9 @@ that side; the Go library handles everything else.
 
 ## Usage
 
+Session-based (recommended when you'll do more than one op — one helper
+launch serves all requests):
+
 ```go
 import (
     "context"
@@ -17,25 +20,27 @@ import (
 )
 
 func main() {
-    s := &macwifi.Scanner{}
-    nets, err := s.Scan(context.Background())
+    ctx := context.Background()
+    c, err := macwifi.New(ctx)
     if err != nil { panic(err) }
+    defer c.Close()
 
+    nets, _ := c.Scan(ctx)
     for _, n := range nets {
         fmt.Printf("%-25s %ddBm %s ch=%d/%dMHz %s\n",
             n.SSID, n.RSSI, n.Security, n.Channel, n.ChannelWidth, n.BSSID)
     }
 
-    // Saved password lookup. macOS shows a per-SSID "Allow access" dialog
-    // the first time; OnKeychainAccess lets you warn the user before it
-    // appears.
-    pw, _ := macwifi.Password("MyHomeWiFi",
+    pw, _ := c.Password(ctx, "MyHomeWiFi",
         macwifi.OnKeychainAccess(func(ssid string) {
-            fmt.Printf("macOS may prompt for access to the %q password — choose 'Always Allow' to skip this next time.\n", ssid)
+            fmt.Printf("macOS may prompt for access to %q\n", ssid)
         }))
     fmt.Println("password:", pw)
 }
 ```
+
+One-shot helpers (`macwifi.Scan(ctx)` / `macwifi.Password(ctx, ssid, opts...)`)
+are also available for callers that only need a single operation.
 
 ### `Network` fields
 
@@ -96,22 +101,22 @@ cases.
 ## Architecture
 
 ```
-┌────────────┐    open -W --env MACWIFI_PORT    ┌─────────────────────┐
-│ Go library │ ──────────────────────────────►  │ WifiScanner.app     │
-│            │                                   │ (LaunchServices:    │
-│            │ ◄─────── 127.0.0.1:PORT ───────── │  CoreWLAN + loc)    │
-│            │       binary response (MWIF…)    └─────────────────────┘
-└────────────┘
-      │
-      │  /usr/bin/security find-generic-password   (lazy, per call)
-      ▼
-  System keychain
+┌────────────┐  open -W --env MACWIFI_PORT  ┌─────────────────────┐
+│ Go Client  │ ───────────────────────────► │ WifiScanner.app     │
+│ (New)      │                              │ (LaunchServices:    │
+│            │ ◄── 127.0.0.1:PORT ───────── │  CoreWLAN + Security) │
+│            │                              │                     │
+│  Scan()   →│ scan_request ─────────────►  │  runScan()          │
+│            │ ◄── scan_response ────────── │                     │
+│  Password →│ password_request ─────────►  │  SecItemCopyMatching│
+│            │ ◄── password_response ────── │  (macOS dialog)     │
+│  Close()  →│ close_request ────────────►  │  exit               │
+└────────────┘                              └─────────────────────┘
 ```
 
-Scanner launched via `open -W` so macOS gives it foreground-app status
-(required for Location Services to return real SSIDs). It calls back to
-a Go-listened ephemeral TCP port, writes a length-prefixed binary message
-— see `protocol.go` (decoder) and `scanner/Sources/main.swift` (encoder)
-— and exits.
-
-Password lookup runs only when `macwifi.Password(ssid)` is called.
+One helper process per Client session, serving a loop of requests until
+`Close()` is called. Launched via `open -W` so macOS classifies it as a
+foreground LaunchServices app (required for unredacted CoreWLAN results).
+Communication is over a loopback TCP socket using a fixed-layout binary
+protocol — see `protocol.go` (Go side) and `scanner/Sources/main.swift`
+(Swift side) for the wire format.
