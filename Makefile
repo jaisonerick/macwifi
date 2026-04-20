@@ -1,19 +1,19 @@
-.PHONY: scanner install test example clean
+.PHONY: scanner release test example clean
 
 APP := WifiScanner.app
-INSTALL_DIR := $(HOME)/.local/share/macwifi
 
+# Local build: compile + sign with whatever cert is available.
+# Output stays at the repo root, used via $MACWIFI_APP for dev iteration.
 scanner: $(APP)
 
 $(APP): scanner/Sources/main.swift scanner/Info.plist scanner/entitlements.plist scanner/build.sh
 	cd scanner && ./build.sh
 
-install: scanner
-	@install -d $(INSTALL_DIR)
-	rm -rf $(INSTALL_DIR)/$(APP)
-	cp -R $(APP) $(INSTALL_DIR)/
-	@echo "→ installed $(APP) → $(INSTALL_DIR)/"
-	@echo "  Scan() and Password() in Go consumers find it automatically."
+# Release build: sign with Developer ID, notarize, staple, stage for embed.
+# Run this before cutting a new version of the Go module.
+#   Prereqs (one-time): `xcrun notarytool store-credentials macwifi-notary ...`
+release:
+	cd scanner && ./release.sh
 
 test:
 	go test ./...

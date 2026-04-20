@@ -1,4 +1,8 @@
+# Scratch build output from build.sh; the shippable bundle is committed
+# under embedded/ by release.sh.
 /WifiScanner.app/
+
+# Go test/build detritus
 *.test
 *.out
 .DS_Store

@@ -25,7 +25,6 @@ import (
 	"net"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"sync"
 	"time"
 )
@@ -306,26 +305,15 @@ func setDeadline(c net.Conn, ctx context.Context) error {
 	return c.SetDeadline(d)
 }
 
+// resolveAppPath returns the path to the signed helper bundle. In the
+// common case the bundle is baked into the Go binary (via go:embed) and
+// extracted on first use. Developers can override with $MACWIFI_APP to
+// point at a locally-built scanner for iteration.
 func resolveAppPath() (string, error) {
 	if p := os.Getenv("MACWIFI_APP"); p != "" {
 		if _, err := os.Stat(p); err == nil {
 			return p, nil
 		}
 	}
-	var candidates []string
-	if exe, err := os.Executable(); err == nil {
-		candidates = append(candidates,
-			filepath.Join(filepath.Dir(exe), "..", "share", "macwifi", "WifiScanner.app"))
-	}
-	if home, err := os.UserHomeDir(); err == nil {
-		candidates = append(candidates,
-			filepath.Join(home, ".local/share/macwifi/WifiScanner.app"))
-	}
-	candidates = append(candidates, "/usr/local/share/macwifi/WifiScanner.app")
-	for _, p := range candidates {
-		if _, err := os.Stat(p); err == nil {
-			return p, nil
-		}
-	}
-	return "", fmt.Errorf("macwifi: WifiScanner.app not installed. Run `make install` in the macwifi checkout (or set $MACWIFI_APP)")
+	return extractScannerApp()
 }

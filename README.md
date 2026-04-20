@@ -54,20 +54,63 @@ Password             string    // always "" from Scan (see macwifi.Password)
 Current, Saved       bool
 ```
 
-## Build & install
+## Installation
 
 ```sh
-make install   # builds scanner + copies WifiScanner.app → ~/.local/share/macwifi/
+go get github.com/jaisonerick/macwifi
 ```
 
-`Scanner.Scan()` will find the installed app automatically. For testing,
-set `$MACWIFI_APP=/path/to/WifiScanner.app` to override.
+That's it. The signed + notarized helper app is embedded in the Go module
+via `go:embed`. On first call, the library extracts it to
+`~/Library/Caches/macwifi/<version>/WifiScanner.app` and launches it with
+`open -W`. No separate install step, no build dependencies for consumers.
+
+For dev iteration against an unreleased Swift change, set `$MACWIFI_APP`
+to a local build and the library will use that instead of the embedded
+copy.
 
 ### First-run Location Services prompt
 
-The first time a Go consumer calls `Scan()`, macOS may show a permission
-dialog for "macwifi WiFi Scanner". Allow it once and the TCC grant persists
-across rebuilds as long as your signing identity doesn't change.
+The first time a consumer calls `Scan()`, macOS shows a permission dialog
+for "macwifi WiFi Scanner". Clicking Allow persists the TCC grant until
+the binary's signing identity changes — which, for releases signed by the
+same Developer ID, means "forever across library updates."
+
+## Contributing / building the helper locally
+
+If you're editing `scanner/Sources/main.swift`, you build and sign with
+your own cert:
+
+```sh
+make scanner               # produces ./WifiScanner.app (debug-signed)
+MACWIFI_APP=$PWD/WifiScanner.app go run ./examples/scan
+```
+
+To cut a release with an updated embedded bundle:
+
+```sh
+make release               # build → sign (Developer ID) → notarize → staple
+                           # → copy to embedded/WifiScanner.app
+# bump embeddedVersion in embed.go
+# commit + tag + push
+```
+
+`make release` requires:
+
+- A **Developer ID Application** cert in your login keychain.
+- A `xcrun notarytool` credential profile named `macwifi-notary`
+  (override via `$NOTARY_PROFILE`). Set it up once:
+
+  ```sh
+  xcrun notarytool store-credentials macwifi-notary \
+      --apple-id YOUR_APPLE_ID \
+      --team-id YOUR_TEAM_ID \
+      --password YOUR_APP_SPECIFIC_PASSWORD
+  ```
+
+  (Generate an app-specific password at
+  <https://appleid.apple.com/account/manage> under "Sign-In and Security →
+  App-Specific Passwords".)
 
 ### Keychain passwords
 

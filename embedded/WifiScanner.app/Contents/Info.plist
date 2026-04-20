@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleIdentifier</key>
+    <string>dev.jaisonerick.macwifi.wifi-scanner</string>
+    <key>CFBundleName</key>
+    <string>macwifi WiFi Scanner</string>
+    <key>CFBundleDisplayName</key>
+    <string>macwifi WiFi Scanner</string>
+    <key>CFBundleExecutable</key>
+    <string>wifi-scanner</string>
+    <key>CFBundleVersion</key>
+    <string>1</string>
+    <key>CFBundleShortVersionString</key>
+    <string>1.0</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>13.0</string>
+    <key>LSUIElement</key>
+    <true/>
+    <key>NSLocationUsageDescription</key>
+    <string>macwifi scans WiFi networks via CoreWLAN; Location Services access is required for unredacted SSIDs.</string>
+    <key>NSLocationWhenInUseUsageDescription</key>
+    <string>macwifi scans WiFi networks via CoreWLAN; Location Services access is required for unredacted SSIDs.</string>
+    <key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+    <string>macwifi scans WiFi networks via CoreWLAN; Location Services access is required for unredacted SSIDs.</string>
+    <key>NSHumanReadableCopyright</key>
+    <string>Copyright © 2026 Jaison Reis</string>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+</dict>
+</plist>

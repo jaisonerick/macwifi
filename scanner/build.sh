@@ -13,7 +13,9 @@ OUT_DIR=".."
 BUNDLE="$OUT_DIR/$APP_NAME"
 
 if [[ -z "${SIGN_IDENTITY:-}" ]]; then
-  for candidate in "Apple Development" "Developer ID Application" "Apple Distribution"; do
+  # Prefer Developer ID for release/notarization; fall back to Apple
+  # Development for local iteration on a dev Mac.
+  for candidate in "Developer ID Application" "Apple Development" "Apple Distribution"; do
     match="$(security find-identity -v -p codesigning | grep -o "\"$candidate:[^\"]*\"" | head -1 | tr -d '"')"
     if [[ -n "$match" ]]; then
       SIGN_IDENTITY="$match"
