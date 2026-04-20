@@ -152,7 +152,7 @@ func (s *Scanner) Scan(ctx context.Context) ([]Network, error) {
 	defer conn.Close()
 	_ = conn.SetReadDeadline(deadline)
 
-	nets, err := decodeResponse(conn)
+	nets, err := decodeScanResponse(conn)
 	// Drain launch goroutine.
 	if lerr := <-launchErr; lerr != nil && err == nil {
 		// The helper connected and wrote but exited non-zero. Surface only

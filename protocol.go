@@ -21,7 +21,8 @@ const (
 	protocolMagic   = "MWIF"
 	protocolVersion = 1
 
-	msgTypeScanResponse = 0x01
+	msgTypeScanResponse     = 0x01
+	msgTypePasswordResponse = 0x02
 
 	flagCurrent = 1 << 0
 	flagSaved   = 1 << 1
@@ -29,49 +30,54 @@ const (
 
 var byteOrder = binary.LittleEndian
 
-// decodeResponse reads a scan-response message from r and returns the decoded
-// networks, or a transport-level error, or the server-side error embedded in
-// the header.
-func decodeResponse(r io.Reader) ([]Network, error) {
+// readHeader reads the MWIF magic/version/msgType/errLen/errMsg prefix from
+// r. Returns the message type (for the caller to dispatch body parsing) or
+// the server-reported error.
+func readHeader(r io.Reader) (msgType uint8, err error) {
 	var magic [4]byte
 	if _, err := io.ReadFull(r, magic[:]); err != nil {
-		return nil, fmt.Errorf("read magic: %w", err)
+		return 0, fmt.Errorf("read magic: %w", err)
 	}
 	if string(magic[:]) != protocolMagic {
-		return nil, fmt.Errorf("bad magic: got %q, want %q", magic, protocolMagic)
+		return 0, fmt.Errorf("bad magic: got %q, want %q", magic, protocolMagic)
 	}
-
-	var version, msgType uint8
+	var version uint8
 	if err := readInt(r, &version); err != nil {
-		return nil, err
+		return 0, err
 	}
 	if version != protocolVersion {
-		return nil, fmt.Errorf("unsupported protocol version %d (want %d)", version, protocolVersion)
+		return 0, fmt.Errorf("unsupported protocol version %d (want %d)", version, protocolVersion)
 	}
 	if err := readInt(r, &msgType); err != nil {
-		return nil, err
+		return 0, err
 	}
-	if msgType != msgTypeScanResponse {
-		return nil, fmt.Errorf("unexpected message type 0x%02x", msgType)
-	}
-
 	var errLen uint16
 	if err := readInt(r, &errLen); err != nil {
-		return nil, err
+		return 0, err
 	}
 	if errLen > 0 {
 		buf := make([]byte, errLen)
 		if _, err := io.ReadFull(r, buf); err != nil {
-			return nil, fmt.Errorf("read error message: %w", err)
+			return 0, fmt.Errorf("read error message: %w", err)
 		}
-		return nil, errors.New(string(buf))
+		return msgType, errors.New(string(buf))
 	}
+	return msgType, nil
+}
 
+// decodeScanResponse reads a scan-response message and returns the networks.
+func decodeScanResponse(r io.Reader) ([]Network, error) {
+	msgType, err := readHeader(r)
+	if err != nil {
+		return nil, err
+	}
+	if msgType != msgTypeScanResponse {
+		return nil, fmt.Errorf("expected scan_response (0x01), got 0x%02x", msgType)
+	}
 	var count uint32
 	if err := readInt(r, &count); err != nil {
 		return nil, err
 	}
-
 	nets := make([]Network, 0, count)
 	for i := uint32(0); i < count; i++ {
 		n, err := decodeNetwork(r)
@@ -81,6 +87,18 @@ func decodeResponse(r io.Reader) ([]Network, error) {
 		nets = append(nets, n)
 	}
 	return nets, nil
+}
+
+// decodePasswordResponse reads a password-response message.
+func decodePasswordResponse(r io.Reader) (string, error) {
+	msgType, err := readHeader(r)
+	if err != nil {
+		return "", err
+	}
+	if msgType != msgTypePasswordResponse {
+		return "", fmt.Errorf("expected password_response (0x02), got 0x%02x", msgType)
+	}
+	return readString16(r)
 }
 
 func decodeNetwork(r io.Reader) (Network, error) {

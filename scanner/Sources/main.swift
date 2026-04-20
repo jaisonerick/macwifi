@@ -5,15 +5,20 @@
 // Go listener on 127.0.0.1:$MACWIFI_PORT and writes a binary protocol
 // message; see protocol.go in the macwifi Go package for the wire layout.
 //
-// The scanner intentionally does NOT read WiFi passwords from Keychain.
-// That's Go's job via /usr/bin/security (which Apple pre-approved for the
-// System keychain's "AirPort" items; our own signing identity isn't in
-// that pre-approval list, so every SecItemCopyMatching would trigger a
-// "allow access" prompt).
+// The app has two modes, selected by environment variable:
+//
+//   MACWIFI_MODE=scan      (default) — CoreWLAN scan, needs Location Services
+//   MACWIFI_MODE=password  — read one saved WiFi password from System keychain
+//                           (triggers macOS's Keychain "Allow access" dialog)
+//
+// In both modes, the result is written to a loopback TCP connection
+// established against MACWIFI_PORT in the calling process (see protocol.go
+// in the Go library for the binary wire format).
 import CoreLocation
 import CoreWLAN
 import Darwin
 import Foundation
+import Security
 
 // ─────────────────────────── location authorization ────────────────────────
 
@@ -257,7 +262,7 @@ struct BinaryWriter {
     }
 }
 
-func encode(networks: [ScannedNetwork], error: String) -> Data {
+func encodeScanResponse(networks: [ScannedNetwork], error: String) -> Data {
     var w = BinaryWriter()
     w.putMagic("MWIF")
     w.putU8(1)           // version
@@ -281,6 +286,16 @@ func encode(networks: [ScannedNetwork], error: String) -> Data {
         if n.saved   { flags |= 0x02 }
         w.putU8(flags)
     }
+    return w.data
+}
+
+func encodePasswordResponse(password: String, error: String) -> Data {
+    var w = BinaryWriter()
+    w.putMagic("MWIF")
+    w.putU8(1)           // version
+    w.putU8(0x02)        // msg type = password_response
+    w.putString16(error)
+    w.putString16(password)
     return w.data
 }
 
@@ -316,14 +331,60 @@ func connectLoopback(port: UInt16) -> FileHandle? {
     return FileHandle(fileDescriptor: fd, closeOnDealloc: true)
 }
 
+// ─────────────────────────── keychain lookup ───────────────────────────────
+
+func keychainPassword(ssid: String) -> (String, String?) {
+    let query: [String: Any] = [
+        kSecClass as String:         kSecClassGenericPassword,
+        kSecAttrDescription as String: "AirPort network password",
+        kSecAttrAccount as String:    ssid,
+        kSecReturnData as String:     true,
+        kSecMatchLimit as String:     kSecMatchLimitOne,
+    ]
+    var result: CFTypeRef?
+    let status = SecItemCopyMatching(query as CFDictionary, &result)
+    switch status {
+    case errSecSuccess:
+        if let data = result as? Data, let s = String(data: data, encoding: .utf8) {
+            return (s, nil)
+        }
+        return ("", "keychain returned non-utf8 data")
+    case errSecItemNotFound:
+        return ("", nil)   // empty, no error
+    case errSecUserCanceled:
+        return ("", "user declined keychain access")
+    default:
+        return ("", "SecItemCopyMatching status \(status)")
+    }
+}
+
 // Main.
-do {
-    let networks = try runScan()
-    sendPayload(encode(networks: networks, error: ""))
-} catch ScanError.message(let msg) {
-    sendPayload(encode(networks: [], error: msg))
+let mode = ProcessInfo.processInfo.environment["MACWIFI_MODE"] ?? "scan"
+
+switch mode {
+case "scan":
+    do {
+        let networks = try runScan()
+        sendPayload(encodeScanResponse(networks: networks, error: ""))
+    } catch ScanError.message(let msg) {
+        sendPayload(encodeScanResponse(networks: [], error: msg))
+        exit(2)
+    } catch {
+        sendPayload(encodeScanResponse(networks: [], error: "\(error)"))
+        exit(1)
+    }
+
+case "password":
+    let ssid = ProcessInfo.processInfo.environment["MACWIFI_SSID"] ?? ""
+    if ssid.isEmpty {
+        sendPayload(encodePasswordResponse(password: "", error: "MACWIFI_SSID is empty"))
+        exit(2)
+    }
+    let (pw, err) = keychainPassword(ssid: ssid)
+    sendPayload(encodePasswordResponse(password: pw, error: err ?? ""))
+    if err != nil { exit(2) }
+
+default:
+    sendPayload(encodeScanResponse(networks: [], error: "unknown MACWIFI_MODE=\(mode)"))
     exit(2)
-} catch {
-    sendPayload(encode(networks: [], error: "\(error)"))
-    exit(1)
 }

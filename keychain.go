@@ -1,10 +1,12 @@
 package macwifi
 
 import (
-	"bytes"
+	"context"
 	"fmt"
+	"io"
+	"net"
 	"os/exec"
-	"strings"
+	"time"
 )
 
 // PasswordOption configures Password.
@@ -12,6 +14,7 @@ type PasswordOption func(*passwordConfig)
 
 type passwordConfig struct {
 	beforeAccess func(ssid string)
+	timeout      time.Duration
 }
 
 // OnKeychainAccess registers fn to run immediately before the macOS
@@ -25,20 +28,25 @@ func OnKeychainAccess(fn func(ssid string)) PasswordOption {
 	return func(c *passwordConfig) { c.beforeAccess = fn }
 }
 
-// Password returns the saved WiFi password for ssid, or "" if there is
-// no saved entry. The first call per SSID may trigger a macOS "Allow
-// access" dialog from the Keychain; once the user picks "Always Allow"
-// on that dialog, subsequent calls are silent.
+// WithTimeout bounds the password lookup. Default 60s (generous because it
+// includes the time the user spends looking at the macOS Allow/Deny dialog).
+func WithTimeout(d time.Duration) PasswordOption {
+	return func(c *passwordConfig) { c.timeout = d }
+}
+
+// Password returns the saved WiFi password for ssid, or "" if there is no
+// saved entry. The lookup runs inside the signed WifiScanner.app helper so
+// the macOS Keychain consent dialog is issued against its stable signing
+// identity — the grant (when you add the app in Keychain Access.app) ties
+// to that identity and persists across rebuilds.
 //
-// Use OnKeychainAccess to display a UI notice right before the prompt:
-//
-//	pw, err := macwifi.Password(ssid,
-//	    macwifi.OnKeychainAccess(func(ssid string) {
-//	        showHeadsUpDialog(ssid)
-//	    }),
-//	)
+// macOS will show an Allow/Deny dialog the first time per SSID. Clicking
+// Allow returns the password once (modern macOS does not offer a
+// persistent "Always Allow" button for this class of item). To pre-
+// authorize permanently, add WifiScanner.app to the item's Access Control
+// tab in Keychain Access.app.
 func Password(ssid string, opts ...PasswordOption) (string, error) {
-	cfg := &passwordConfig{}
+	cfg := &passwordConfig{timeout: 60 * time.Second}
 	for _, opt := range opts {
 		opt(cfg)
 	}
@@ -46,27 +54,60 @@ func Password(ssid string, opts ...PasswordOption) (string, error) {
 		cfg.beforeAccess(ssid)
 	}
 
-	cmd := exec.Command("security",
-		"find-generic-password",
-		"-D", "AirPort network password",
-		"-a", ssid,
-		"-w")
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		msg := strings.TrimSpace(stderr.String())
-		// Not-found is an empty password, not an error.
-		if strings.Contains(msg, "could not be found") ||
-			strings.Contains(msg, "SecKeychainSearchCopyNext") {
-			return "", nil
-		}
-		// User dismissed the consent dialog (errSecUserCanceled = -128).
-		if strings.Contains(msg, "User canceled") ||
-			strings.Contains(msg, "cancelled by the user") {
-			return "", fmt.Errorf("macwifi: keychain access denied by user")
-		}
-		return "", fmt.Errorf("macwifi: keychain lookup: %w (%s)", err, msg)
+	appPath, err := resolveAppPath()
+	if err != nil {
+		return "", err
 	}
-	return strings.TrimRight(stdout.String(), "\n"), nil
+
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return "", fmt.Errorf("macwifi: listen: %w", err)
+	}
+	defer listener.Close()
+	port := listener.Addr().(*net.TCPAddr).Port
+
+	ctx, cancel := context.WithTimeout(context.Background(), cfg.timeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "open",
+		"-W",
+		"--env", fmt.Sprintf("MACWIFI_PORT=%d", port),
+		"--env", "MACWIFI_MODE=password",
+		"--env", "MACWIFI_SSID="+ssid,
+		appPath,
+	)
+	launchErr := make(chan error, 1)
+	go func() { launchErr <- cmd.Run() }()
+
+	deadline, _ := ctx.Deadline()
+	if tcpL, ok := listener.(*net.TCPListener); ok {
+		_ = tcpL.SetDeadline(deadline)
+	}
+
+	conn, err := listener.Accept()
+	if err != nil {
+		select {
+		case lerr := <-launchErr:
+			if lerr != nil {
+				return "", fmt.Errorf("macwifi: helper exited without connecting: %w", lerr)
+			}
+		default:
+		}
+		return "", fmt.Errorf("macwifi: accept helper connection: %w", err)
+	}
+	defer conn.Close()
+	_ = conn.SetReadDeadline(deadline)
+
+	pw, err := decodePasswordResponse(conn)
+	// Drain launch goroutine.
+	if lerr := <-launchErr; lerr != nil && err == nil {
+		return "", fmt.Errorf("macwifi: helper: %w", lerr)
+	}
+	if err != nil {
+		if err == io.EOF || err == io.ErrUnexpectedEOF {
+			return "", fmt.Errorf("macwifi: helper closed before sending a password")
+		}
+		return "", err
+	}
+	return pw, nil
 }
