@@ -1,77 +1,162 @@
 name: Signed macOS Companion
 
 on:
+  pull_request_target:
+    branches:
+      - main
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - ready_for_review
   workflow_dispatch:
     inputs:
       pr:
         description: Pull request number to update with the signed embedded helper.
-        required: false
+        required: true
         type: string
 
 permissions:
-  contents: write
-  pull-requests: write
+  contents: read
+  pull-requests: read
 
 concurrency:
-  group: signed-macos-companion-${{ github.ref }}
+  group: signed-macos-companion-pr-${{ github.event.pull_request.number || inputs.pr || github.ref }}
   cancel-in-progress: false
 
+env:
+  APP_BUNDLE: embedded/WifiScanner.app
+  EXPECTED_TEAM_ID: 3WP9U888B7
+  METADATA_PATH: Contents/Resources/macwifi-build.json
+
 jobs:
-  release:
-    name: Signed companion
-    runs-on: macos-latest
-    environment: macos-signing
+  plan:
+    name: Plan signed companion
+    runs-on: ubuntu-latest
+
+    outputs:
+      action: ${{ steps.plan.outputs.action }}
+      fail_reason: ${{ steps.plan.outputs.fail_reason }}
+      pr_number: ${{ steps.plan.outputs.pr_number }}
+      push_branch: ${{ steps.plan.outputs.push_branch }}
+      push_repo: ${{ steps.plan.outputs.push_repo }}
 
     steps:
-      - name: Resolve target ref
-        id: target
+      - name: Resolve pull request
+        id: plan
         env:
-          GH_TOKEN: ${{ secrets.MACWIFI_AUTOMATION_TOKEN || github.token }}
-          PR_NUMBER: ${{ inputs.pr }}
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr }}
         run: |
-          if [ -n "$PR_NUMBER" ]; then
-            pr_json="$(gh pr view "$PR_NUMBER" \
-              --repo "$GITHUB_REPOSITORY" \
-              --json baseRefName,headRefName,headRepository,headRepositoryOwner,isCrossRepository,state,title)"
-            state="$(jq -r '.state' <<<"$pr_json")"
-            base="$(jq -r '.baseRefName' <<<"$pr_json")"
-            cross_repo="$(jq -r '.isCrossRepository' <<<"$pr_json")"
-            owner="$(jq -r '.headRepositoryOwner.login' <<<"$pr_json")"
-            repo="$(jq -r '.headRepository.name' <<<"$pr_json")"
-            branch="$(jq -r '.headRefName' <<<"$pr_json")"
+          set -euo pipefail
 
-            if [ "$state" != "OPEN" ]; then
-              echo "PR #$PR_NUMBER is $state, expected OPEN." >&2
-              exit 1
-            fi
-            if [ "$base" != "main" ]; then
-              echo "PR #$PR_NUMBER targets $base, expected main." >&2
-              exit 1
-            fi
-            if [ "$cross_repo" != "false" ]; then
-              echo "PR #$PR_NUMBER is from a fork; refusing to push signing output to an untrusted fork." >&2
-              exit 1
-            fi
+          set_output() {
+            printf '%s=%s\n' "$1" "$2" >> "$GITHUB_OUTPUT"
+          }
 
-            echo "ref=$branch" >> "$GITHUB_OUTPUT"
-            echo "push_branch=$branch" >> "$GITHUB_OUTPUT"
-            echo "push_repo=$owner/$repo" >> "$GITHUB_OUTPUT"
-            echo "message=chore: update signed WifiScanner.app for PR #$PR_NUMBER [skip companion]" >> "$GITHUB_OUTPUT"
-            echo "mode=pr" >> "$GITHUB_OUTPUT"
-          else
-            echo "ref=main" >> "$GITHUB_OUTPUT"
-            echo "push_branch=" >> "$GITHUB_OUTPUT"
-            echo "push_repo=" >> "$GITHUB_OUTPUT"
-            echo "message=chore: update signed WifiScanner.app [skip companion]" >> "$GITHUB_OUTPUT"
-            echo "mode=main-check" >> "$GITHUB_OUTPUT"
+          if [ -z "$PR_NUMBER" ]; then
+            set_output action fail
+            set_output fail_reason "This workflow must be run for a pull request."
+            exit 0
           fi
 
-      - name: Check out repository
+          pr_json="$(gh pr view "$PR_NUMBER" \
+            --repo "$GITHUB_REPOSITORY" \
+            --json baseRefName,headRefName,headRepository,headRepositoryOwner,headRefOid,isCrossRepository,state)"
+
+          state="$(jq -r '.state' <<<"$pr_json")"
+          base="$(jq -r '.baseRefName' <<<"$pr_json")"
+          cross_repo="$(jq -r '.isCrossRepository' <<<"$pr_json")"
+          owner="$(jq -r '.headRepositoryOwner.login' <<<"$pr_json")"
+          repo="$(jq -r '.headRepository.name' <<<"$pr_json")"
+          branch="$(jq -r '.headRefName' <<<"$pr_json")"
+          head_sha="$(jq -r '.headRefOid' <<<"$pr_json")"
+
+          set_output pr_number "$PR_NUMBER"
+          set_output push_branch "$branch"
+          set_output push_repo "$owner/$repo"
+
+          if [ "$state" != "OPEN" ]; then
+            set_output action fail
+            set_output fail_reason "PR #$PR_NUMBER is $state, expected OPEN."
+            exit 0
+          fi
+          if [ "$base" != "main" ]; then
+            set_output action fail
+            set_output fail_reason "PR #$PR_NUMBER targets $base, expected main."
+            exit 0
+          fi
+
+          changed_files="$(gh pr diff "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --name-only)"
+          printf '%s\n' "$changed_files"
+
+          scanner_touched=false
+          embedded_touched=false
+          while IFS= read -r file; do
+            case "$file" in
+              scanner/Sources/*|scanner/Info.plist|scanner/entitlements.plist)
+                scanner_touched=true
+                ;;
+              embedded/WifiScanner.app/*)
+                embedded_touched=true
+                ;;
+            esac
+          done <<< "$changed_files"
+
+          if [ "$scanner_touched" = false ] && [ "$embedded_touched" = false ]; then
+            set_output action noop
+            set_output fail_reason ""
+            exit 0
+          fi
+
+          if [ "$cross_repo" != "false" ]; then
+            set_output action fail
+            set_output fail_reason "PR #$PR_NUMBER changes the companion from a fork. A maintainer must move the branch into this repository before signing can run."
+            exit 0
+          fi
+
+          commit_json="$(gh api "repos/$owner/$repo/commits/$head_sha")"
+          message="$(jq -r '.commit.message' <<<"$commit_json")"
+          author_login="$(jq -r '.author.login // ""' <<<"$commit_json")"
+          committer_login="$(jq -r '.committer.login // ""' <<<"$commit_json")"
+          expected_message="chore: update signed WifiScanner.app for PR #$PR_NUMBER [skip companion]"
+
+          generated_commit=false
+          if [[ "$message" == "$expected_message"* ]] && {
+            [ "$author_login" = "github-actions[bot]" ] || [ "$committer_login" = "github-actions[bot]" ];
+          }; then
+            generated_commit=true
+          fi
+
+          if [ "$generated_commit" = true ]; then
+            set_output action verify
+          elif [ "$scanner_touched" = true ]; then
+            set_output action sign
+          elif [ "$embedded_touched" = true ]; then
+            set_output action verify
+          else
+            set_output action noop
+          fi
+          set_output fail_reason ""
+
+  sign:
+    name: Build, sign, and notarize companion
+    runs-on: macos-latest
+    needs: plan
+    if: needs.plan.outputs.action == 'sign'
+    environment: macos-signing
+    permissions:
+      contents: read
+      pull-requests: read
+
+    steps:
+      - name: Check out pull request branch
         uses: actions/checkout@v4
         with:
-          ref: ${{ steps.target.outputs.ref }}
+          repository: ${{ needs.plan.outputs.push_repo }}
+          ref: ${{ needs.plan.outputs.push_branch }}
           fetch-depth: 0
-          token: ${{ secrets.MACWIFI_AUTOMATION_TOKEN || github.token }}
+          token: ${{ secrets.MACWIFI_AUTOMATION_TOKEN }}
 
       - name: Verify signing secrets
         env:
@@ -80,19 +165,23 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          MACWIFI_AUTOMATION_TOKEN: ${{ secrets.MACWIFI_AUTOMATION_TOKEN }}
         run: |
+          set -euo pipefail
+
           echo "::add-mask::$MACOS_CERTIFICATE_P12_BASE64"
           echo "::add-mask::$MACOS_CERTIFICATE_PASSWORD"
           echo "::add-mask::$APPLE_APP_SPECIFIC_PASSWORD"
+          echo "::add-mask::$MACWIFI_AUTOMATION_TOKEN"
 
           missing=()
-          for name in MACOS_CERTIFICATE_P12_BASE64 MACOS_CERTIFICATE_PASSWORD APPLE_ID APPLE_TEAM_ID APPLE_APP_SPECIFIC_PASSWORD; do
+          for name in MACOS_CERTIFICATE_P12_BASE64 MACOS_CERTIFICATE_PASSWORD APPLE_ID APPLE_TEAM_ID APPLE_APP_SPECIFIC_PASSWORD MACWIFI_AUTOMATION_TOKEN; do
             if [ -z "${!name}" ]; then
               missing+=("$name")
             fi
           done
           if [ "${#missing[@]}" -gt 0 ]; then
-            printf 'Missing required GitHub Actions secrets:\n'
+            printf 'Missing required macos-signing environment secrets:\n'
             printf '  %s\n' "${missing[@]}"
             exit 1
           fi
@@ -102,6 +191,8 @@ jobs:
           MACOS_CERTIFICATE_P12_BASE64: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
           MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
         run: |
+          set -euo pipefail
+
           certificate_path="$RUNNER_TEMP/developer-id.p12"
           keychain_path="$RUNNER_TEMP/app-signing.keychain-db"
           keychain_password="$(uuidgen)"
@@ -127,18 +218,104 @@ jobs:
             -k "$keychain_password" \
             "$keychain_path" >/dev/null
 
-      - name: Build, sign, notarize, and staple
+      - name: Build, sign, notarize, and stage helper
         env:
           NOTARY_APPLE_ID: ${{ secrets.APPLE_ID }}
           NOTARY_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           NOTARY_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           SIGN_IDENTITY: ${{ secrets.MACOS_CODESIGN_IDENTITY }}
-        run: make release
+        run: |
+          set -euo pipefail
+
+          echo "::add-mask::$NOTARY_PASSWORD"
+
+          source_digest() {
+            {
+              for file in scanner/Info.plist scanner/entitlements.plist; do
+                shasum -a 256 "$file" | awk -v path="$file" '{print path "\t" $1}'
+              done
+              find scanner/Sources -type f | LC_ALL=C sort | while IFS= read -r file; do
+                shasum -a 256 "$file" | awk -v path="$file" '{print path "\t" $1}'
+              done
+            } | shasum -a 256 | awk '{print $1}'
+          }
+
+          if [ -z "$SIGN_IDENTITY" ]; then
+            SIGN_IDENTITY="$(security find-identity -v -p codesigning | awk -F'"' '$2 ~ /^Developer ID Application:/ {print $2; exit}')"
+          fi
+          if [ -z "$SIGN_IDENTITY" ]; then
+            echo "No Developer ID Application signing identity was imported." >&2
+            exit 1
+          fi
+
+          digest="$(source_digest)"
+          bundle="WifiScanner.app"
+          executable="$bundle/Contents/MacOS/wifi-scanner"
+          metadata="$bundle/$METADATA_PATH"
+
+          rm -rf "$bundle"
+          mkdir -p "$bundle/Contents/MacOS" "$bundle/Contents/Resources"
+          cp scanner/Info.plist "$bundle/Contents/Info.plist"
+          cat > "$metadata" <<EOF
+          {
+            "sourceDigest": "$digest"
+          }
+          EOF
+
+          swift_sources=()
+          while IFS= read -r source; do
+            swift_sources+=("$source")
+          done < <(find scanner/Sources -name '*.swift' -type f | LC_ALL=C sort)
+          if [ "${#swift_sources[@]}" -eq 0 ]; then
+            echo "No Swift source files found under scanner/Sources." >&2
+            exit 1
+          fi
+
+          swiftc -O \
+            -framework CoreWLAN \
+            -framework CoreLocation \
+            -framework Security \
+            -o "$executable" \
+            "${swift_sources[@]}"
+
+          codesign --force \
+            --sign "$SIGN_IDENTITY" \
+            --options runtime \
+            --entitlements scanner/entitlements.plist \
+            "$bundle"
+          codesign --verify --deep --strict "$bundle"
+
+          team="$(codesign -dv "$bundle" 2>&1 | awk -F= '/^TeamIdentifier=/ {print $2; exit}')"
+          if [ "$team" != "$EXPECTED_TEAM_ID" ]; then
+            echo "Signed helper has TeamIdentifier=$team, expected $EXPECTED_TEAM_ID." >&2
+            exit 1
+          fi
+
+          zip_path="$RUNNER_TEMP/WifiScanner.app.zip"
+          rm -f "$zip_path"
+          ditto -c -k --keepParent "$bundle" "$zip_path"
+
+          xcrun notarytool submit "$zip_path" \
+            --apple-id "$NOTARY_APPLE_ID" \
+            --team-id "$NOTARY_TEAM_ID" \
+            --password "$NOTARY_PASSWORD" \
+            --wait
+          rm -f "$zip_path"
+
+          xcrun stapler staple "$bundle"
+          xcrun stapler validate "$bundle"
+          spctl -a -t exec -vv "$bundle"
+
+          rm -rf "$APP_BUNDLE"
+          mkdir -p "$(dirname "$APP_BUNDLE")"
+          cp -R "$bundle" "$APP_BUNDLE"
 
       - name: Detect embedded helper changes
         id: embedded_changes
         run: |
-          if git diff --quiet -- embedded/WifiScanner.app; then
+          set -euo pipefail
+
+          if git diff --quiet -- "$APP_BUNDLE"; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
           else
             echo "changed=true" >> "$GITHUB_OUTPUT"
@@ -146,31 +323,30 @@ jobs:
 
       - name: Commit signed embedded helper
         if: steps.embedded_changes.outputs.changed == 'true'
-        id: signed_commit
         env:
-          GH_TOKEN: ${{ secrets.MACWIFI_AUTOMATION_TOKEN || github.token }}
+          GH_TOKEN: ${{ secrets.MACWIFI_AUTOMATION_TOKEN }}
         run: |
+          set -euo pipefail
+
+          echo "::add-mask::$GH_TOKEN"
+
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add embedded/WifiScanner.app
-          git commit -m "${{ steps.target.outputs.message }}"
-
-          if [ "${{ steps.target.outputs.mode }}" = "pr" ]; then
-            git push "https://x-access-token:${GH_TOKEN}@github.com/${{ steps.target.outputs.push_repo }}.git" \
-              "HEAD:${{ steps.target.outputs.push_branch }}"
-          else
-            echo "Signed embedded helper differs from main. Run this workflow with a PR number so the signed helper is committed before merge." >&2
-            exit 1
-          fi
+          git add "$APP_BUNDLE"
+          git commit -m "chore: update signed WifiScanner.app for PR #${{ needs.plan.outputs.pr_number }} [skip companion]"
+          git push "https://x-access-token:${GH_TOKEN}@github.com/${{ needs.plan.outputs.push_repo }}.git" \
+            "HEAD:${{ needs.plan.outputs.push_branch }}"
 
       - name: Report unchanged embedded helper
         if: steps.embedded_changes.outputs.changed == 'false'
-        run: echo "The notarized helper matches embedded/WifiScanner.app; no generated PR needed."
+        run: echo "The notarized helper already matches $APP_BUNDLE."
 
       - name: Package signed app
         run: |
+          set -euo pipefail
+
           ditto -c -k --keepParent WifiScanner.app WifiScanner.app.zip
-          ditto -c -k --keepParent embedded/WifiScanner.app embedded-WifiScanner.app.zip
+          ditto -c -k --keepParent "$APP_BUNDLE" embedded-WifiScanner.app.zip
 
       - name: Upload signed app
         uses: actions/upload-artifact@v4
@@ -186,3 +362,111 @@ jobs:
         run: |
           rm -f "$RUNNER_TEMP/developer-id.p12"
           security delete-keychain "$RUNNER_TEMP/app-signing.keychain-db" 2>/dev/null || true
+
+  verify:
+    name: Verify signed companion
+    runs-on: macos-latest
+    needs: plan
+    if: needs.plan.outputs.action == 'verify'
+
+    steps:
+      - name: Check out pull request branch
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ needs.plan.outputs.push_repo }}
+          ref: ${{ needs.plan.outputs.push_branch }}
+          fetch-depth: 0
+
+      - name: Verify embedded helper
+        run: |
+          set -euo pipefail
+
+          source_digest() {
+            {
+              for file in scanner/Info.plist scanner/entitlements.plist; do
+                shasum -a 256 "$file" | awk -v path="$file" '{print path "\t" $1}'
+              done
+              find scanner/Sources -type f | LC_ALL=C sort | while IFS= read -r file; do
+                shasum -a 256 "$file" | awk -v path="$file" '{print path "\t" $1}'
+              done
+            } | shasum -a 256 | awk '{print $1}'
+          }
+
+          if [ ! -d "$APP_BUNDLE" ]; then
+            echo "$APP_BUNDLE is missing." >&2
+            exit 1
+          fi
+
+          metadata="$APP_BUNDLE/$METADATA_PATH"
+          if [ ! -f "$metadata" ]; then
+            echo "$metadata is missing; rerun signing so the helper carries its source digest." >&2
+            exit 1
+          fi
+
+          expected_digest="$(source_digest)"
+          actual_digest="$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["sourceDigest"])' "$metadata")"
+          if [ "$actual_digest" != "$expected_digest" ]; then
+            echo "Embedded helper source digest is $actual_digest, expected $expected_digest." >&2
+            exit 1
+          fi
+
+          codesign --verify --deep --strict "$APP_BUNDLE"
+          team="$(codesign -dv "$APP_BUNDLE" 2>&1 | awk -F= '/^TeamIdentifier=/ {print $2; exit}')"
+          if [ "$team" != "$EXPECTED_TEAM_ID" ]; then
+            echo "Embedded helper has TeamIdentifier=$team, expected $EXPECTED_TEAM_ID." >&2
+            exit 1
+          fi
+          xcrun stapler validate "$APP_BUNDLE"
+
+  signed-companion:
+    name: Signed companion
+    runs-on: ubuntu-latest
+    needs:
+      - plan
+      - sign
+      - verify
+    if: always()
+
+    steps:
+      - name: Require signed companion state
+        env:
+          ACTION: ${{ needs.plan.outputs.action }}
+          FAIL_REASON: ${{ needs.plan.outputs.fail_reason }}
+          PLAN_RESULT: ${{ needs.plan.result }}
+          SIGN_RESULT: ${{ needs.sign.result }}
+          VERIFY_RESULT: ${{ needs.verify.result }}
+        run: |
+          set -euo pipefail
+
+          echo "plan=$PLAN_RESULT action=$ACTION sign=$SIGN_RESULT verify=$VERIFY_RESULT"
+
+          if [ "$PLAN_RESULT" != "success" ]; then
+            echo "Planning failed." >&2
+            exit 1
+          fi
+
+          case "$ACTION" in
+            noop)
+              echo "No signed companion update is required."
+              ;;
+            sign)
+              if [ "$SIGN_RESULT" != "success" ]; then
+                echo "Signing failed or did not complete." >&2
+                exit 1
+              fi
+              ;;
+            verify)
+              if [ "$VERIFY_RESULT" != "success" ]; then
+                echo "Signed companion verification failed." >&2
+                exit 1
+              fi
+              ;;
+            fail)
+              echo "$FAIL_REASON" >&2
+              exit 1
+              ;;
+            *)
+              echo "Unknown signed companion action: $ACTION" >&2
+              exit 1
+              ;;
+          esac
