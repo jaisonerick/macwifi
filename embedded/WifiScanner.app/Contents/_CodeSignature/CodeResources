@@ -3,9 +3,22 @@
 <plist version="1.0">
 <dict>
 	<key>files</key>
-	<dict/>
+	<dict>
+		<key>Resources/macwifi-build.json</key>
+		<data>
+		Nn5WnMy7sfktHvkQaemg1yAvyJM=
+		</data>
+	</dict>
 	<key>files2</key>
-	<dict/>
+	<dict>
+		<key>Resources/macwifi-build.json</key>
+		<dict>
+			<key>hash2</key>
+			<data>
+			pKpFRp7NlT25D2YG/wLdnLcU3ZGI2cikqXABgTNxOaM=
+			</data>
+		</dict>
+	</dict>
 	<key>rules</key>
 	<dict>
 		<key>^Resources/</key>
