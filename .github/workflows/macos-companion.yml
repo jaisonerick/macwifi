@@ -27,7 +27,6 @@ concurrency:
 env:
   APP_BUNDLE: embedded/WifiScanner.app
   EXPECTED_TEAM_ID: 3WP9U888B7
-  METADATA_PATH: Contents/Resources/macwifi-build.json
 
 jobs:
   plan:
@@ -150,6 +149,12 @@ jobs:
       pull-requests: read
 
     steps:
+      - name: Check out trusted scripts
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          path: trusted
+
       - name: Check out pull request branch
         uses: actions/checkout@v4
         with:
@@ -157,6 +162,7 @@ jobs:
           ref: ${{ needs.plan.outputs.push_branch }}
           fetch-depth: 0
           token: ${{ secrets.MACWIFI_AUTOMATION_TOKEN }}
+          path: worktree
 
       - name: Verify signing secrets
         env:
@@ -228,90 +234,12 @@ jobs:
           set -euo pipefail
 
           echo "::add-mask::$NOTARY_PASSWORD"
-
-          source_digest() {
-            {
-              for file in scanner/Info.plist scanner/entitlements.plist; do
-                shasum -a 256 "$file" | awk -v path="$file" '{print path "\t" $1}'
-              done
-              find scanner/Sources -type f | LC_ALL=C sort | while IFS= read -r file; do
-                shasum -a 256 "$file" | awk -v path="$file" '{print path "\t" $1}'
-              done
-            } | shasum -a 256 | awk '{print $1}'
-          }
-
-          if [ -z "$SIGN_IDENTITY" ]; then
-            SIGN_IDENTITY="$(security find-identity -v -p codesigning | awk -F'"' '$2 ~ /^Developer ID Application:/ {print $2; exit}')"
-          fi
-          if [ -z "$SIGN_IDENTITY" ]; then
-            echo "No Developer ID Application signing identity was imported." >&2
-            exit 1
-          fi
-
-          digest="$(source_digest)"
-          bundle="WifiScanner.app"
-          executable="$bundle/Contents/MacOS/wifi-scanner"
-          metadata="$bundle/$METADATA_PATH"
-
-          rm -rf "$bundle"
-          mkdir -p "$bundle/Contents/MacOS" "$bundle/Contents/Resources"
-          cp scanner/Info.plist "$bundle/Contents/Info.plist"
-          cat > "$metadata" <<EOF
-          {
-            "sourceDigest": "$digest"
-          }
-          EOF
-
-          swift_sources=()
-          while IFS= read -r source; do
-            swift_sources+=("$source")
-          done < <(find scanner/Sources -name '*.swift' -type f | LC_ALL=C sort)
-          if [ "${#swift_sources[@]}" -eq 0 ]; then
-            echo "No Swift source files found under scanner/Sources." >&2
-            exit 1
-          fi
-
-          swiftc -O \
-            -framework CoreWLAN \
-            -framework CoreLocation \
-            -framework Security \
-            -o "$executable" \
-            "${swift_sources[@]}"
-
-          codesign --force \
-            --sign "$SIGN_IDENTITY" \
-            --options runtime \
-            --entitlements scanner/entitlements.plist \
-            "$bundle"
-          codesign --verify --deep --strict "$bundle"
-
-          team="$(codesign -dv "$bundle" 2>&1 | awk -F= '/^TeamIdentifier=/ {print $2; exit}')"
-          if [ "$team" != "$EXPECTED_TEAM_ID" ]; then
-            echo "Signed helper has TeamIdentifier=$team, expected $EXPECTED_TEAM_ID." >&2
-            exit 1
-          fi
-
-          zip_path="$RUNNER_TEMP/WifiScanner.app.zip"
-          rm -f "$zip_path"
-          ditto -c -k --keepParent "$bundle" "$zip_path"
-
-          xcrun notarytool submit "$zip_path" \
-            --apple-id "$NOTARY_APPLE_ID" \
-            --team-id "$NOTARY_TEAM_ID" \
-            --password "$NOTARY_PASSWORD" \
-            --wait
-          rm -f "$zip_path"
-
-          xcrun stapler staple "$bundle"
-          xcrun stapler validate "$bundle"
-          spctl -a -t exec -vv "$bundle"
-
-          rm -rf "$APP_BUNDLE"
-          mkdir -p "$(dirname "$APP_BUNDLE")"
-          cp -R "$bundle" "$APP_BUNDLE"
+          "$GITHUB_WORKSPACE/trusted/scripts/release-wifi-scanner-app.sh" \
+            --repo-root "$GITHUB_WORKSPACE/worktree"
 
       - name: Detect embedded helper changes
         id: embedded_changes
+        working-directory: worktree
         run: |
           set -euo pipefail
 
@@ -323,6 +251,7 @@ jobs:
 
       - name: Commit signed embedded helper
         if: steps.embedded_changes.outputs.changed == 'true'
+        working-directory: worktree
         env:
           GH_TOKEN: ${{ secrets.MACWIFI_AUTOMATION_TOKEN }}
         run: |
@@ -342,6 +271,7 @@ jobs:
         run: echo "The notarized helper already matches $APP_BUNDLE."
 
       - name: Package signed app
+        working-directory: worktree
         run: |
           set -euo pipefail
 
@@ -353,8 +283,8 @@ jobs:
         with:
           name: signed-wifi-scanner-app
           path: |
-            WifiScanner.app.zip
-            embedded-WifiScanner.app.zip
+            worktree/WifiScanner.app.zip
+            worktree/embedded-WifiScanner.app.zip
           retention-days: 30
 
       - name: Clean up signing keychain
@@ -370,53 +300,26 @@ jobs:
     if: needs.plan.outputs.action == 'verify'
 
     steps:
+      - name: Check out trusted scripts
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          path: trusted
+
       - name: Check out pull request branch
         uses: actions/checkout@v4
         with:
           repository: ${{ needs.plan.outputs.push_repo }}
           ref: ${{ needs.plan.outputs.push_branch }}
           fetch-depth: 0
+          path: worktree
 
       - name: Verify embedded helper
         run: |
           set -euo pipefail
-
-          source_digest() {
-            {
-              for file in scanner/Info.plist scanner/entitlements.plist; do
-                shasum -a 256 "$file" | awk -v path="$file" '{print path "\t" $1}'
-              done
-              find scanner/Sources -type f | LC_ALL=C sort | while IFS= read -r file; do
-                shasum -a 256 "$file" | awk -v path="$file" '{print path "\t" $1}'
-              done
-            } | shasum -a 256 | awk '{print $1}'
-          }
-
-          if [ ! -d "$APP_BUNDLE" ]; then
-            echo "$APP_BUNDLE is missing." >&2
-            exit 1
-          fi
-
-          metadata="$APP_BUNDLE/$METADATA_PATH"
-          if [ ! -f "$metadata" ]; then
-            echo "$metadata is missing; rerun signing so the helper carries its source digest." >&2
-            exit 1
-          fi
-
-          expected_digest="$(source_digest)"
-          actual_digest="$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["sourceDigest"])' "$metadata")"
-          if [ "$actual_digest" != "$expected_digest" ]; then
-            echo "Embedded helper source digest is $actual_digest, expected $expected_digest." >&2
-            exit 1
-          fi
-
-          codesign --verify --deep --strict "$APP_BUNDLE"
-          team="$(codesign -dv "$APP_BUNDLE" 2>&1 | awk -F= '/^TeamIdentifier=/ {print $2; exit}')"
-          if [ "$team" != "$EXPECTED_TEAM_ID" ]; then
-            echo "Embedded helper has TeamIdentifier=$team, expected $EXPECTED_TEAM_ID." >&2
-            exit 1
-          fi
-          xcrun stapler validate "$APP_BUNDLE"
+          "$GITHUB_WORKSPACE/trusted/scripts/verify-wifi-scanner-app.sh" \
+            --repo-root "$GITHUB_WORKSPACE/worktree" \
+            --bundle "$GITHUB_WORKSPACE/worktree/$APP_BUNDLE"
 
   signed-companion:
     name: Signed companion

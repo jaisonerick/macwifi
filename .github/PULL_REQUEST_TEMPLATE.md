@@ -4,7 +4,7 @@ Describe what changed and why.
 
 ## Testing
 
-- [ ] `make ci-go`
+- [ ] `make ci-macos`
 - [ ] `go run ./examples/scan`
 - [ ] `go run ./examples/scan --password MyHomeWiFi`
 - [ ] If the Swift helper changed: `make scanner`

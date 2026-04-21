@@ -188,10 +188,10 @@ xcrun notarytool store-credentials macwifi-notary \
 	--password YOUR_APP_SPECIFIC_PASSWORD
 ```
 
-On GitHub, pushes to `main` that touch the Swift companion run the signed
-companion workflow. The workflow signs, notarizes, staples, and opens a
-generated pull request for `embedded/WifiScanner.app` so the Go module embeds
-the notarized helper. The workflow expects the repository secrets documented in
+On GitHub, pull requests to `main` that touch the Swift companion run the
+signed companion workflow. The workflow signs, notarizes, staples, and commits
+the updated `embedded/WifiScanner.app` back to the pull request branch before
+merge. The workflow expects the environment secrets documented in
 [`.github/SIGNING_SECRETS.md`](.github/SIGNING_SECRETS.md).
 
 ## Contributing
@@ -203,12 +203,12 @@ Issues and pull requests are welcome, especially for:
 - Documentation improvements for real-world diagnostics, support, and security
   use cases.
 
-For code changes, run `make ci-go` before opening a pull request. If your
+For code changes, run `make ci-macos` before opening a pull request. If your
 change touches the Swift helper, also test with `make scanner` and
 `MACWIFI_APP=$PWD/WifiScanner.app go run ./examples/scan`.
 
-Changes to the helper app need maintainer approval because signing and
-notarization happen offline.
+Changes to the helper app must pass the signed companion workflow because
+signing and notarization are automated before merge.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the full contribution workflow,
 [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) for community expectations,
