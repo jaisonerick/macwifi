@@ -1,0 +1,24 @@
+{
+  "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
+  "release-type": "go",
+  "bump-minor-pre-major": true,
+  "include-v-in-tag": true,
+  "changelog-sections": [
+    {"type": "feat", "section": "Features"},
+    {"type": "fix", "section": "Bug Fixes"},
+    {"type": "perf", "section": "Performance"},
+    {"type": "deps", "section": "Dependencies"},
+    {"type": "refactor", "section": "Refactors"},
+    {"type": "docs", "section": "Documentation"},
+    {"type": "test", "section": "Tests", "hidden": true},
+    {"type": "ci", "section": "Continuous Integration", "hidden": true},
+    {"type": "chore", "section": "Miscellaneous", "hidden": true},
+    {"type": "build", "section": "Build System", "hidden": true}
+  ],
+  "packages": {
+    ".": {
+      "package-name": "macwifi",
+      "changelog-path": "CHANGELOG.md"
+    }
+  }
+}
