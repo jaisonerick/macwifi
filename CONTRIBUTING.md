@@ -44,7 +44,7 @@ sensitive network details unless you have intentionally anonymized them.
 Run the Go tests:
 
 ```sh
-go test ./...
+make ci-go
 ```
 
 Run the scanner example:
@@ -69,15 +69,16 @@ release helper.
 Before opening a PR:
 
 - Keep the change focused.
-- Run `go test ./...`.
+- Run `make ci-go`.
 - Update docs or examples when behavior changes.
 - Mention whether you tested the Location Services prompt, Keychain prompt, or
   both.
 - If you changed `scanner/Sources/main.swift`, test with `make scanner` and
   `MACWIFI_APP=$PWD/WifiScanner.app go run ./examples/scan`.
 
-Changes to the embedded helper need maintainer approval because release signing
-and notarization happen offline.
+Changes to the embedded helper need maintainer approval. Pushes to `main` that
+touch the helper run the signed companion workflow, which signs, notarizes,
+staples, and opens a generated PR for `embedded/WifiScanner.app`.
 
 ## Release Notes
 

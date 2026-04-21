@@ -147,7 +147,7 @@ go run ./examples/scan --password MyHomeWiFi
 Run tests:
 
 ```sh
-go test ./...
+make ci-go
 ```
 
 Build and use a local helper while editing Swift code:
@@ -167,7 +167,6 @@ with an updated helper:
 
 ```sh
 make release
-# bump embeddedVersion in embed.go
 # commit, tag, and push
 ```
 
@@ -189,6 +188,12 @@ xcrun notarytool store-credentials macwifi-notary \
 	--password YOUR_APP_SPECIFIC_PASSWORD
 ```
 
+On GitHub, pushes to `main` that touch the Swift companion run the signed
+companion workflow. The workflow signs, notarizes, staples, and opens a
+generated pull request for `embedded/WifiScanner.app` so the Go module embeds
+the notarized helper. The workflow expects the repository secrets documented in
+[`.github/SIGNING_SECRETS.md`](.github/SIGNING_SECRETS.md).
+
 ## Contributing
 
 Issues and pull requests are welcome, especially for:
@@ -198,7 +203,7 @@ Issues and pull requests are welcome, especially for:
 - Documentation improvements for real-world diagnostics, support, and security
   use cases.
 
-For code changes, run `go test ./...` before opening a pull request. If your
+For code changes, run `make ci-go` before opening a pull request. If your
 change touches the Swift helper, also test with `make scanner` and
 `MACWIFI_APP=$PWD/WifiScanner.app go run ./examples/scan`.
 

@@ -16,7 +16,7 @@ if [[ -z "${SIGN_IDENTITY:-}" ]]; then
   # Prefer Developer ID for release/notarization; fall back to Apple
   # Development for local iteration on a dev Mac.
   for candidate in "Developer ID Application" "Apple Development" "Apple Distribution"; do
-    match="$(security find-identity -v -p codesigning | grep -o "\"$candidate:[^\"]*\"" | head -1 | tr -d '"')"
+    match="$(security find-identity -v -p codesigning | awk -v candidate="$candidate" -F'"' '$2 ~ "^" candidate ":" {print $2; exit}')"
     if [[ -n "$match" ]]; then
       SIGN_IDENTITY="$match"
       break

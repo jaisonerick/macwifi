@@ -1,7 +1,9 @@
 package macwifi
 
 import (
+	"crypto/sha256"
 	"embed"
+	"encoding/hex"
 	"fmt"
 	"io/fs"
 	"os"
@@ -9,9 +11,9 @@ import (
 	"strings"
 )
 
-// embeddedVersion is bumped every time the embedded WifiScanner.app
-// changes. Used to invalidate the on-disk cache so consumers pick up
-// the newer bundle without manual cleanup.
+// embeddedVersion is a human-readable cache namespace. The actual cache key
+// also includes a digest of the embedded bundle, so updated helper files are
+// extracted without requiring a manual version bump.
 const embeddedVersion = "0.1.0"
 
 // scannerBundle is the signed + notarized WifiScanner.app. Every file
@@ -36,12 +38,16 @@ func extractScannerApp() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("macwifi: locate cache dir: %w", err)
 	}
-	versionDir := filepath.Join(cacheBase, "macwifi", embeddedVersion)
+	cacheKey, err := scannerCacheKey()
+	if err != nil {
+		return "", fmt.Errorf("macwifi: hash embedded bundle: %w", err)
+	}
+	versionDir := filepath.Join(cacheBase, "macwifi", cacheKey)
 	appPath := filepath.Join(versionDir, "WifiScanner.app")
 	marker := filepath.Join(versionDir, ".extracted")
 
 	// Fast path: already extracted at this version.
-	if b, err := os.ReadFile(marker); err == nil && string(b) == embeddedVersion {
+	if b, err := os.ReadFile(marker); err == nil && string(b) == cacheKey {
 		return appPath, nil
 	}
 
@@ -58,15 +64,55 @@ func extractScannerApp() (string, error) {
 		return "", fmt.Errorf("macwifi: extract bundle: %w", err)
 	}
 
-	if err := os.WriteFile(marker, []byte(embeddedVersion), 0o644); err != nil {
+	if err := os.WriteFile(marker, []byte(cacheKey), 0o644); err != nil {
 		return "", err
 	}
 	return appPath, nil
 }
 
+func scannerCacheKey() (string, error) {
+	sum, err := fsTreeDigest(scannerBundle, scannerSourcePrefix)
+	if err != nil {
+		return "", err
+	}
+	return embeddedVersion + "-" + sum[:12], nil
+}
+
+func fsTreeDigest(src fs.FS, srcPrefix string) (string, error) {
+	h := sha256.New()
+	if err := fs.WalkDir(src, srcPrefix, func(path string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		rel := strings.TrimPrefix(path, srcPrefix)
+		rel = strings.TrimPrefix(rel, "/")
+		if rel == "" {
+			return nil
+		}
+
+		_, _ = h.Write([]byte(rel))
+		_, _ = h.Write([]byte{0})
+		if d.IsDir() {
+			_, _ = h.Write([]byte{1})
+			return nil
+		}
+
+		data, err := fs.ReadFile(src, path)
+		if err != nil {
+			return err
+		}
+		_, _ = h.Write(data)
+		_, _ = h.Write([]byte{0})
+		return nil
+	}); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
 // copyEmbedTree walks srcPrefix inside src and mirrors the tree under dst,
 // preserving executability for the inner binary.
-func copyEmbedTree(src embed.FS, srcPrefix, dst string) error {
+func copyEmbedTree(src fs.FS, srcPrefix, dst string) error {
 	return fs.WalkDir(src, srcPrefix, func(path string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
@@ -79,7 +125,7 @@ func copyEmbedTree(src embed.FS, srcPrefix, dst string) error {
 			return os.MkdirAll(target, 0o755)
 		}
 
-		data, err := src.ReadFile(path)
+		data, err := fs.ReadFile(src, path)
 		if err != nil {
 			return err
 		}
