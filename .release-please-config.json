@@ -3,6 +3,7 @@
   "release-type": "go",
   "bump-minor-pre-major": true,
   "include-v-in-tag": true,
+  "include-component-in-tag": false,
   "changelog-sections": [
     {"type": "feat", "section": "Features"},
     {"type": "fix", "section": "Bug Fixes"},
@@ -18,7 +19,10 @@
   "packages": {
     ".": {
       "package-name": "macwifi",
-      "changelog-path": "CHANGELOG.md"
+      "changelog-path": "CHANGELOG.md",
+      "extra-files": [
+        {"type": "generic", "path": "embed.go"}
+      ]
     }
   }
 }
