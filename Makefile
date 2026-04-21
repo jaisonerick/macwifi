@@ -3,6 +3,9 @@
 APP := WifiScanner.app
 GO ?= go
 SWIFTC ?= swiftc
+# Pin to match scanner/Info.plist LSMinimumSystemVersion and the shipped
+# helper target in scripts/build-wifi-scanner-app.sh.
+SWIFT_TARGET ?= arm64-apple-macos13.0
 GO_FILES := $(shell find . -name '*.go' -not -path './.git/*')
 SWIFT_FILES := $(shell find scanner/Sources -name '*.swift' -type f | sort)
 SWIFT_LIBRARY_FILES := $(shell find scanner/Sources -name '*.swift' -type f -not -name 'main.swift' | sort)
@@ -45,6 +48,7 @@ test-race:
 
 swift-check:
 	$(SWIFTC) -typecheck \
+		-target $(SWIFT_TARGET) \
 		-framework CoreWLAN \
 		-framework CoreLocation \
 		-framework Security \
@@ -55,6 +59,7 @@ swift-test:
 	tmp="$$(mktemp -d)"; \
 	trap 'rm -rf "$$tmp"' EXIT; \
 	$(SWIFTC) -D TESTING -parse-as-library -Onone \
+		-target $(SWIFT_TARGET) \
 		-framework CoreWLAN \
 		-framework CoreLocation \
 		-framework Security \
