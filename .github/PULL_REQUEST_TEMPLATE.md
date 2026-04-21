@@ -7,6 +7,7 @@ Describe what changed and why.
 - [ ] `make ci-macos`
 - [ ] `go run ./examples/scan`
 - [ ] `go run ./examples/scan --password MyHomeWiFi`
+- [ ] If the Swift helper changed: `make swift-test`
 - [ ] If the Swift helper changed: `make scanner`
 - [ ] If the Swift helper changed: `MACWIFI_APP=$PWD/WifiScanner.app go run ./examples/scan`
 

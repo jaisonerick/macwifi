@@ -1,16 +1,18 @@
-.PHONY: ci ci-go ci-macos fmt fmt-check mod-tidy mod-tidy-check vet build test test-race swift-check scanner scanner-ci release verify-embedded-helper example clean
+.PHONY: ci ci-go ci-macos fmt fmt-check mod-tidy mod-tidy-check vet build test test-race swift-check swift-test scanner scanner-ci release verify-embedded-helper example clean
 
 APP := WifiScanner.app
 GO ?= go
 SWIFTC ?= swiftc
 GO_FILES := $(shell find . -name '*.go' -not -path './.git/*')
 SWIFT_FILES := $(shell find scanner/Sources -name '*.swift' -type f | sort)
+SWIFT_LIBRARY_FILES := $(shell find scanner/Sources -name '*.swift' -type f -not -name 'main.swift' | sort)
+SWIFT_TEST_FILES := $(shell find scanner/Tests -name '*.swift' -type f | sort)
 
 ci: ci-go
 
 ci-go: fmt-check mod-tidy-check vet test-race build
 
-ci-macos: ci-go swift-check scanner-ci
+ci-macos: ci-go swift-check swift-test scanner-ci
 
 fmt:
 	gofmt -w $(GO_FILES)
@@ -47,6 +49,19 @@ swift-check:
 		-framework CoreLocation \
 		-framework Security \
 		$(SWIFT_FILES)
+
+swift-test:
+	@set -e; \
+	tmp="$$(mktemp -d)"; \
+	trap 'rm -rf "$$tmp"' EXIT; \
+	$(SWIFTC) -D TESTING -parse-as-library -Onone \
+		-framework CoreWLAN \
+		-framework CoreLocation \
+		-framework Security \
+		-o "$$tmp/WifiScannerTests" \
+		$(SWIFT_LIBRARY_FILES) \
+		$(SWIFT_TEST_FILES); \
+	"$$tmp/WifiScannerTests"
 
 # Local build: compile + sign with whatever cert is available.
 # Output stays at the repo root, used via $MACWIFI_APP for dev iteration.

@@ -43,5 +43,8 @@ jobs:
       - name: Typecheck Swift helper
         run: make swift-check
 
+      - name: Run Swift helper unit tests
+        run: make swift-test
+
       - name: Build ad-hoc signed helper
         run: make scanner-ci
