@@ -9,7 +9,14 @@ The workflow does not run for `embedded/WifiScanner.app` changes. Generated
 helper PRs can merge without retriggering the signing workflow, which keeps the
 signed bundle in the Go module without creating a workflow loop.
 
-Required repository secrets:
+The signing secrets should be stored on the protected `macos-signing`
+environment, not as repository-wide secrets. That environment should be limited
+to protected branches and require approval before deployment. This keeps pull
+request workflows from reading signing material, and it adds a manual gate
+before any changed signing workflow can access the private key or notary
+password on `main`.
+
+Required `macos-signing` environment secrets:
 
 - `MACOS_CERTIFICATE_P12_BASE64`: base64-encoded Developer ID Application
   `.p12` certificate.
@@ -18,7 +25,7 @@ Required repository secrets:
 - `APPLE_TEAM_ID`: Apple Developer team ID.
 - `APPLE_APP_SPECIFIC_PASSWORD`: app-specific password for the Apple ID.
 
-Optional repository secret:
+Optional `macos-signing` environment secrets:
 
 - `MACOS_CODESIGN_IDENTITY`: full Developer ID identity string. Leave unset to
   let `scanner/build.sh` pick the first Developer ID Application identity from
@@ -36,9 +43,9 @@ security export \
   -f pkcs12 \
   -o developer-id.p12
 
-base64 -i developer-id.p12 | gh secret set MACOS_CERTIFICATE_P12_BASE64
-gh secret set MACOS_CERTIFICATE_PASSWORD
-gh secret set APPLE_ID
-gh secret set APPLE_TEAM_ID
-gh secret set APPLE_APP_SPECIFIC_PASSWORD
+base64 -i developer-id.p12 | gh secret set MACOS_CERTIFICATE_P12_BASE64 --env macos-signing
+gh secret set MACOS_CERTIFICATE_PASSWORD --env macos-signing
+gh secret set APPLE_ID --env macos-signing
+gh secret set APPLE_TEAM_ID --env macos-signing
+gh secret set APPLE_APP_SPECIFIC_PASSWORD --env macos-signing
 ```
