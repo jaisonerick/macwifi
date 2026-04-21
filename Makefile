@@ -1,9 +1,10 @@
-.PHONY: ci ci-go ci-macos fmt fmt-check mod-tidy mod-tidy-check vet build test test-race swift-check scanner scanner-ci release example clean
+.PHONY: ci ci-go ci-macos fmt fmt-check mod-tidy mod-tidy-check vet build test test-race swift-check scanner scanner-ci release verify-embedded-helper example clean
 
 APP := WifiScanner.app
 GO ?= go
 SWIFTC ?= swiftc
 GO_FILES := $(shell find . -name '*.go' -not -path './.git/*')
+SWIFT_FILES := $(shell find scanner/Sources -name '*.swift' -type f | sort)
 
 ci: ci-go
 
@@ -45,14 +46,14 @@ swift-check:
 		-framework CoreWLAN \
 		-framework CoreLocation \
 		-framework Security \
-		scanner/Sources/main.swift
+		$(SWIFT_FILES)
 
 # Local build: compile + sign with whatever cert is available.
 # Output stays at the repo root, used via $MACWIFI_APP for dev iteration.
 scanner: $(APP)
 
-$(APP): scanner/Sources/main.swift scanner/Info.plist scanner/entitlements.plist scanner/build.sh
-	cd scanner && ./build.sh
+$(APP): $(SWIFT_FILES) scanner/Info.plist scanner/entitlements.plist scripts/build-wifi-scanner-app.sh scripts/wifi-scanner-source-digest.sh
+	"$(CURDIR)/scripts/build-wifi-scanner-app.sh" --repo-root "$(CURDIR)" --bundle "$(CURDIR)/$(APP)"
 
 scanner-ci:
 	rm -rf $(APP)
@@ -62,7 +63,10 @@ scanner-ci:
 # Run this before cutting a new version of the Go module.
 #   Prereqs (one-time): `xcrun notarytool store-credentials macwifi-notary ...`
 release:
-	cd scanner && ./release.sh
+	"$(CURDIR)/scripts/release-wifi-scanner-app.sh" --repo-root "$(CURDIR)"
+
+verify-embedded-helper:
+	"$(CURDIR)/scripts/verify-wifi-scanner-app.sh" --repo-root "$(CURDIR)"
 
 example: scanner
 	MACWIFI_APP=$(PWD)/$(APP) go run ./examples/scan

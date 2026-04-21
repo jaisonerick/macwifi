@@ -16,8 +16,8 @@ never need a second generated commit after a companion change merges.
   signing workflow that runs for their own branch.
 - The secret-bearing job refuses companion changes from fork pull requests.
 - The signing job checks out pull request files, but it does not run pull
-  request-controlled shell scripts. It compiles `scanner/Sources`, copies
-  `scanner/Info.plist`, and signs with the fixed commands in the workflow.
+  request-controlled shell scripts. It runs the shared scripts checked out from
+  the protected base branch against the pull request worktree.
 - The signed app contains `Contents/Resources/macwifi-build.json` with a digest
   of the companion source inputs. Verification compares that digest against the
   current pull request source, verifies code signing, checks the Apple team ID,
