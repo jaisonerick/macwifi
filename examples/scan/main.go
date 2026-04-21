@@ -1,0 +1,60 @@
+// Example: scan once, print everything.
+//
+//	go run ./examples/scan                 # scan only
+//	go run ./examples/scan --password SSID # look up a saved password
+package main
+
+import (
+	"context"
+	"flag"
+	"fmt"
+	"os"
+	"text/tabwriter"
+
+	"github.com/jaisonerick/macwifi"
+)
+
+func main() {
+	showPw := flag.String("password", "", "look up Keychain password for this SSID and print it")
+	flag.Parse()
+
+	ctx := context.Background()
+
+	if *showPw != "" {
+		pw, err := macwifi.Password(ctx, *showPw, macwifi.OnKeychainAccess(func(ssid string) {
+			fmt.Fprintf(os.Stderr, "→ macOS may prompt for Keychain access to %q\n", ssid)
+		}))
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		if pw == "" {
+			fmt.Fprintln(os.Stderr, "no saved password for", *showPw)
+			os.Exit(2)
+		}
+		fmt.Println(pw)
+		return
+	}
+
+	nets, err := macwifi.Scan(ctx)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "scan:", err)
+		os.Exit(1)
+	}
+
+	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(tw, "SSID\tRSSI\tCH\tBAND\tWIDTH\tSEC\tBSSID\tFLAGS")
+	for _, n := range nets {
+		flags := ""
+		if n.Current {
+			flags += "C"
+		}
+		if n.Saved {
+			flags += "S"
+		}
+		fmt.Fprintf(tw, "%s\t%d\t%d\t%s\t%d\t%s\t%s\t%s\n",
+			n.SSID, n.RSSI, n.Channel, n.ChannelBand, n.ChannelWidth,
+			n.Security, n.BSSID, flags)
+	}
+	tw.Flush()
+}
