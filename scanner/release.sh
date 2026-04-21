@@ -11,6 +11,8 @@
 #            --password YOUR_APP_SPECIFIC_PASSWORD
 #
 # Override the profile name via NOTARY_PROFILE if you used a different one.
+# CI can use direct notary credentials instead of a stored profile:
+#   NOTARY_APPLE_ID, NOTARY_TEAM_ID, NOTARY_PASSWORD
 # Override the signing identity via SIGN_IDENTITY if auto-detection picks the
 # wrong cert.
 
@@ -21,6 +23,17 @@ APP="WifiScanner.app"
 SCRATCH=".."             # where build.sh writes the initial bundle
 EMBED_DIR="../embedded"
 NOTARY_PROFILE="${NOTARY_PROFILE:-macwifi-notary}"
+NOTARY_ARGS=()
+
+if [[ -n "${NOTARY_APPLE_ID:-}" || -n "${NOTARY_TEAM_ID:-}" || -n "${NOTARY_PASSWORD:-}" ]]; then
+  if [[ -z "${NOTARY_APPLE_ID:-}" || -z "${NOTARY_TEAM_ID:-}" || -z "${NOTARY_PASSWORD:-}" ]]; then
+    echo "error: set NOTARY_APPLE_ID, NOTARY_TEAM_ID, and NOTARY_PASSWORD together" >&2
+    exit 1
+  fi
+  NOTARY_ARGS=(--apple-id "$NOTARY_APPLE_ID" --team-id "$NOTARY_TEAM_ID" --password "$NOTARY_PASSWORD")
+else
+  NOTARY_ARGS=(--keychain-profile "$NOTARY_PROFILE")
+fi
 
 # ── 1. compile + sign via build.sh ─────────────────────────────────────────
 ./build.sh
@@ -43,11 +56,13 @@ ditto -c -k --keepParent "$SCRATCH/$APP" "$ZIP"
 # ── 3. submit & wait ───────────────────────────────────────────────────────
 echo "→ submitting to Apple (this takes ~3–5 minutes)"
 if ! xcrun notarytool submit "$ZIP" \
-       --keychain-profile "$NOTARY_PROFILE" \
+       "${NOTARY_ARGS[@]}" \
        --wait; then
-  echo "error: notarization failed. Check the submission log:" >&2
-  echo "  xcrun notarytool history --keychain-profile $NOTARY_PROFILE" >&2
-  echo "  xcrun notarytool log <submission-id> --keychain-profile $NOTARY_PROFILE" >&2
+  echo "error: notarization failed. Check the notarytool output above for the submission id." >&2
+  if [[ "${NOTARY_ARGS[*]}" == *"--keychain-profile"* ]]; then
+    echo "  xcrun notarytool history --keychain-profile $NOTARY_PROFILE" >&2
+    echo "  xcrun notarytool log <submission-id> --keychain-profile $NOTARY_PROFILE" >&2
+  fi
   exit 1
 fi
 rm -f "$ZIP"
@@ -70,4 +85,4 @@ cp -R "$SCRATCH/$APP" "$EMBED_DIR/"
 echo
 echo "✓ release build complete."
 echo "  embedded artifact: $(cd "$EMBED_DIR" && pwd)/$APP"
-echo "  next: bump const embeddedVersion in macwifi.go, commit, tag, push."
+echo "  next: commit the updated embedded helper, tag, and push."

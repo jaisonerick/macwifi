@@ -110,10 +110,10 @@ type Network struct {
 // is launched on New and stays alive until Close — subsequent Scan and
 // Password calls reuse the same connection (no per-call app launch).
 type Client struct {
-	cmd   *exec.Cmd
-	conn  net.Conn
-	mu    sync.Mutex // one request at a time
-	done  chan error // cmd.Run() completion
+	cmd    *exec.Cmd
+	conn   net.Conn
+	mu     sync.Mutex // one request at a time
+	done   chan error // cmd.Run() completion
 	closed bool
 }
 

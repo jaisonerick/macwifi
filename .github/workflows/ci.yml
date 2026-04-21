@@ -1,0 +1,96 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  go:
+    name: Go
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Check Go formatting
+        run: |
+          files="$(gofmt -l $(find . -name '*.go' -not -path './.git/*'))"
+          if [ -n "$files" ]; then
+            printf '%s\n' "$files"
+            exit 1
+          fi
+
+      - name: Check module files are tidy
+        run: |
+          go mod tidy
+          git diff --exit-code -- go.mod go.sum
+
+      - name: Run go vet
+        run: go vet ./...
+
+      - name: Run unit tests with race detector
+        run: go test -race ./...
+
+      - name: Build Go packages
+        run: go build ./...
+
+  macos:
+    name: macOS helper
+    runs-on: macos-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Check Go formatting
+        run: |
+          files="$(gofmt -l $(find . -name '*.go' -not -path './.git/*'))"
+          if [ -n "$files" ]; then
+            printf '%s\n' "$files"
+            exit 1
+          fi
+
+      - name: Check module files are tidy
+        run: |
+          go mod tidy
+          git diff --exit-code -- go.mod go.sum
+
+      - name: Run go vet
+        run: go vet ./...
+
+      - name: Run unit tests with race detector
+        run: go test -race ./...
+
+      - name: Build Go packages
+        run: go build ./...
+
+      - name: Typecheck Swift helper
+        run: |
+          swiftc -typecheck \
+            -framework CoreWLAN \
+            -framework CoreLocation \
+            -framework Security \
+            scanner/Sources/main.swift
+
+      - name: Build ad-hoc signed helper
+        run: |
+          rm -rf WifiScanner.app
+          SIGN_IDENTITY=- scanner/build.sh
