@@ -75,8 +75,15 @@ if [ "${#swift_sources[@]}" -eq 0 ]; then
   exit 1
 fi
 
-echo "-> compiling"
+# Pinned to match scanner/Info.plist LSMinimumSystemVersion. Without an
+# explicit target, swiftc defaults to the SDK's platform version, which
+# makes the shipped helper refuse to launch on older macOS even when the
+# Info.plist advertises support.
+swift_target="${SWIFT_TARGET:-arm64-apple-macos13.0}"
+
+echo "-> compiling (target $swift_target)"
 "$swiftc_bin" -O \
+  -target "$swift_target" \
   -framework CoreWLAN \
   -framework CoreLocation \
   -framework Security \
