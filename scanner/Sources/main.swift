@@ -11,8 +11,8 @@
 // parent — even if the parent crashes, is SIGKILL'd, or the helper is
 // stuck inside SecItemCopyMatching waiting on a keychain dialog.
 //
-// Protocol: see protocol.go on the Go side for the fixed-layout binary
-// wire format.
+// Protocol: see protocol.go on the Go side for the fixed-layout binary wire
+// format.
 import CoreLocation
 import CoreWLAN
 import Darwin
