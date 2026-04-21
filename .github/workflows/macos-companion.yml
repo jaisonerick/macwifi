@@ -22,6 +22,7 @@ jobs:
   release:
     name: Signed companion
     runs-on: macos-latest
+    environment: macos-signing
     if: github.event_name == 'workflow_dispatch' || !contains(github.event.head_commit.message, '[skip companion]')
 
     steps:
@@ -39,6 +40,10 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
         run: |
+          echo "::add-mask::$MACOS_CERTIFICATE_P12_BASE64"
+          echo "::add-mask::$MACOS_CERTIFICATE_PASSWORD"
+          echo "::add-mask::$APPLE_APP_SPECIFIC_PASSWORD"
+
           missing=()
           for name in MACOS_CERTIFICATE_P12_BASE64 MACOS_CERTIFICATE_PASSWORD APPLE_ID APPLE_TEAM_ID APPLE_APP_SPECIFIC_PASSWORD; do
             if [ -z "${!name}" ]; then
@@ -60,6 +65,10 @@ jobs:
           keychain_path="$RUNNER_TEMP/app-signing.keychain-db"
           keychain_password="$(uuidgen)"
 
+          echo "::add-mask::$MACOS_CERTIFICATE_P12_BASE64"
+          echo "::add-mask::$MACOS_CERTIFICATE_PASSWORD"
+          echo "::add-mask::$keychain_password"
+
           printf '%s' "$MACOS_CERTIFICATE_P12_BASE64" | base64 --decode > "$certificate_path"
           security create-keychain -p "$keychain_password" "$keychain_path"
           security set-keychain-settings -lut 21600 "$keychain_path"
@@ -68,15 +77,14 @@ jobs:
             -k "$keychain_path" \
             -P "$MACOS_CERTIFICATE_PASSWORD" \
             -T /usr/bin/codesign \
-            -T /usr/bin/security
+            -T /usr/bin/security >/dev/null
           security list-keychains -d user -s "$keychain_path"
           security default-keychain -s "$keychain_path"
           security set-key-partition-list \
             -S apple-tool:,apple:,codesign: \
             -s \
             -k "$keychain_password" \
-            "$keychain_path"
-          security find-identity -v -p codesigning "$keychain_path"
+            "$keychain_path" >/dev/null
 
       - name: Build, sign, notarize, and staple
         env:
@@ -143,3 +151,9 @@ jobs:
             WifiScanner.app.zip
             embedded-WifiScanner.app.zip
           retention-days: 30
+
+      - name: Clean up signing keychain
+        if: always()
+        run: |
+          rm -f "$RUNNER_TEMP/developer-id.p12"
+          security delete-keychain "$RUNNER_TEMP/app-signing.keychain-db" 2>/dev/null || true
