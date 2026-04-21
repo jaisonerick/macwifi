@@ -1,13 +1,15 @@
 # Signing Secrets
 
-The `Signed macOS Companion` workflow runs on pushes to `main` that touch the
-Swift companion. It imports a Developer ID Application certificate, builds the
-helper, notarizes it with Apple, staples the ticket, and opens a generated pull
-request that updates `embedded/WifiScanner.app`.
+The `Signed macOS Companion` workflow is run manually with a pull request
+number after a maintainer has reviewed companion changes. It checks out that PR
+branch, imports a Developer ID Application certificate, builds the helper,
+notarizes it with Apple, staples the ticket, and pushes the updated
+`embedded/WifiScanner.app` back to the same PR branch.
 
-The workflow does not run for `embedded/WifiScanner.app` changes. Generated
-helper PRs can merge without retriggering the signing workflow, which keeps the
-signed bundle in the Go module without creating a workflow loop.
+The workflow refuses to push signing output to fork PRs. If the signed output
+matches the branch, it exits without changing anything. If it is run without a
+PR number and the signed output differs from `main`, it fails instead of opening
+a second generated PR.
 
 The signing secrets should be stored on the protected `macos-signing`
 environment, not as repository-wide secrets. That environment should be limited
