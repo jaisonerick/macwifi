@@ -93,7 +93,7 @@ jobs:
           embedded_touched=false
           while IFS= read -r file; do
             case "$file" in
-              scanner/Sources/*|scanner/Info.plist|scanner/entitlements.plist)
+              scanner/Sources/*|scanner/Info.plist|scanner/entitlements.plist|scripts/build-wifi-scanner-app.sh|scripts/wifi-scanner-source-digest.sh)
                 scanner_touched=true
                 ;;
               embedded/WifiScanner.app/*)
