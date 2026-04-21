@@ -32,6 +32,8 @@ import (
 // Band classifies a WiFi channel's radio band.
 type Band uint8
 
+// Band values reported by the scanner. BandUnknown is returned when
+// macOS doesn't report the band for a network.
 const (
 	BandUnknown Band = 0
 	Band24GHz   Band = 1
@@ -39,6 +41,8 @@ const (
 	Band6GHz    Band = 3
 )
 
+// String returns a human-readable label ("2.4GHz", "5GHz", "6GHz",
+// or "unknown").
 func (b Band) String() string {
 	switch b {
 	case Band24GHz:
@@ -55,6 +59,9 @@ func (b Band) String() string {
 // Security classifies a WiFi network's authentication mode.
 type Security uint8
 
+// Security values reported by the scanner. SecurityUnknown is returned
+// when macOS doesn't expose the authentication mode (for example, when
+// Location Services has not been approved).
 const (
 	SecurityUnknown        Security = 0
 	SecurityNone           Security = 1
@@ -67,6 +74,9 @@ const (
 	SecurityOWE            Security = 8
 )
 
+// String returns a human-readable label ("none", "WEP", "WPA",
+// "WPA2", "WPA3", "WPA2-Enterprise", "WPA3-Enterprise", "OWE",
+// or "unknown").
 func (s Security) String() string {
 	switch s {
 	case SecurityNone:

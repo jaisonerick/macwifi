@@ -1,5 +1,8 @@
 # macwifi
 
+[![Go Reference](https://pkg.go.dev/badge/github.com/jaisonerick/macwifi.svg)](https://pkg.go.dev/github.com/jaisonerick/macwifi)
+[![CI](https://github.com/jaisonerick/macwifi/actions/workflows/ci.yml/badge.svg)](https://github.com/jaisonerick/macwifi/actions/workflows/ci.yml)
+
 Real macOS WiFi data for Go.
 
 Recent macOS versions can redact WiFi details from CLI and background tools.
