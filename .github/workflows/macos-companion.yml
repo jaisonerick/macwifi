@@ -279,7 +279,7 @@ jobs:
           ditto -c -k --keepParent "$APP_BUNDLE" embedded-WifiScanner.app.zip
 
       - name: Upload signed app
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: signed-wifi-scanner-app
           path: |
