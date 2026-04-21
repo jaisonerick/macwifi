@@ -150,13 +150,13 @@ jobs:
 
     steps:
       - name: Check out trusted scripts
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           ref: main
           path: trusted
 
       - name: Check out pull request branch
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           repository: ${{ needs.plan.outputs.push_repo }}
           ref: ${{ needs.plan.outputs.push_branch }}
@@ -301,13 +301,13 @@ jobs:
 
     steps:
       - name: Check out trusted scripts
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           ref: main
           path: trusted
 
       - name: Check out pull request branch
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           repository: ${{ needs.plan.outputs.push_repo }}
           ref: ${{ needs.plan.outputs.push_branch }}
