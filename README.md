@@ -1,165 +1,215 @@
 # macwifi
 
-macOS WiFi scanning from Go, with real (unredacted) SSIDs, BSSIDs, channel
-info, security modes, and saved-network passwords.
+Real macOS WiFi data for Go.
 
-On macOS 15+, only apps granted Location Services can see live SSIDs. This
-library ships a small signed Swift helper (`WifiScanner.app`) that handles
-that side; the Go library handles everything else.
+Recent macOS versions can redact WiFi details from CLI and background tools.
+This lib helps you answer practical questions like "what network is this Mac
+seeing?" and "what BSSID is it connected to?"
+
+This package gives Go programs a straightforward API for scanning nearby WiFi
+networks on macOS. It can also read saved WiFi passwords from the macOS Keychain
+after the user approves the system prompt.
+
+## Power TUI apps and internal WiFi tools
+
+`macwifi` is meant for Go developers building macOS-focused tools:
+
+- Network diagnostics CLIs and TUIs.
+- IT, inventory, and support utilities that need local WiFi context.
+- Security and audit tools that need BSSID, channel, band, and security mode.
+- Migration or recovery tools that need user-approved access to saved WiFi
+  passwords.
+- Desktop agents that need a Go API while still respecting macOS privacy
+  prompts.
+
+It is not a cross-platform WiFi abstraction, packet-capture library, background
+daemon, or privacy-control bypass. Location Services and Keychain access remain
+under user control.
+
+## What You Get
+
+WiFi data for saved SSIDs and reachable networks through a simple interface:
+
+```go
+// Asks for Location Services permission on first request.
+networks, err := macwifi.Scan(context.Background())
+// networks: []macwifi.Network{
+// 	{
+// 		SSID:         "Office WiFi",
+// 		BSSID:        "aa:bb:cc:dd:ee:ff",
+// 		RSSI:         -52,
+// 		Channel:      149,
+// 		ChannelBand:  macwifi.Band5GHz,
+// 		ChannelWidth: 80,
+// 		Security:     macwifi.SecurityWPA2Personal,
+// 		Current:      true,
+// 		Saved:        true,
+// 	},
+// }
+
+// Asks for Keychain password access.
+password, err := macwifi.Password(context.Background(), "MyHomeWiFi")
+// password: '<my-password>'
+```
+
+Available data:
+
+| Field | Description |
+| --- | --- |
+| `SSID` | WiFi network name. |
+| `BSSID` | Access point MAC address, available after Location Services approval. |
+| `RSSI` | Signal strength in dBm. Closer to zero is stronger. |
+| `Noise` | Noise floor in dBm, when macOS reports it. |
+| `Channel` | WiFi channel number. |
+| `ChannelBand` | `2.4GHz`, `5GHz`, `6GHz`, or `unknown`. |
+| `ChannelWidth` | Channel bandwidth in MHz. |
+| `Security` | Open, WEP, WPA, WPA2, WPA3, enterprise, OWE, or unknown. |
+| `PHYMode` | 802.11 mode when available. |
+| `Current` | Whether the Mac is connected to this network now. |
+| `Saved` | Whether the SSID is in the Mac's preferred networks list. |
+| `Password` | Always empty from `Scan`; use `Password(ctx, ssid)` when needed. |
+
+Saved networks that are not currently visible may be included with signal and
+channel fields set to zero.
 
 ## Usage
 
-Session-based (recommended when you'll do more than one op — one helper
-launch serves all requests):
-
-```go
-import (
-    "context"
-    "fmt"
-    "github.com/jaisonerick/macwifi"
-)
-
-func main() {
-    ctx := context.Background()
-    c, err := macwifi.New(ctx)
-    if err != nil { panic(err) }
-    defer c.Close()
-
-    nets, _ := c.Scan(ctx)
-    for _, n := range nets {
-        fmt.Printf("%-25s %ddBm %s ch=%d/%dMHz %s\n",
-            n.SSID, n.RSSI, n.Security, n.Channel, n.ChannelWidth, n.BSSID)
-    }
-
-    pw, _ := c.Password(ctx, "MyHomeWiFi",
-        macwifi.OnKeychainAccess(func(ssid string) {
-            fmt.Printf("macOS may prompt for access to %q\n", ssid)
-        }))
-    fmt.Println("password:", pw)
-}
-```
-
-One-shot helpers (`macwifi.Scan(ctx)` / `macwifi.Password(ctx, ssid, opts...)`)
-are also available for callers that only need a single operation.
-
-### `Network` fields
-
-```go
-SSID, BSSID, PHYMode string
-RSSI, Noise, Channel int
-ChannelBand          Band      // 2.4GHz / 5GHz / 6GHz / unknown
-ChannelWidth         int       // MHz
-Security             Security  // WPA2 / WPA3 / Open / Enterprise / OWE …
-Password             string    // always "" from Scan (see macwifi.Password)
-Current, Saved       bool
-```
-
-## Installation
+### Install
 
 ```sh
 go get github.com/jaisonerick/macwifi
 ```
 
-That's it. The signed + notarized helper app is embedded in the Go module
-via `go:embed`. On first call, the library extracts it to
-`~/Library/Caches/macwifi/<version>/WifiScanner.app` and launches it with
-`open -W`. No separate install step, no build dependencies for consumers.
+Requirements:
 
-For dev iteration against an unreleased Swift change, set `$MACWIFI_APP`
-to a local build and the library will use that instead of the embedded
-copy.
+- macOS 13 or newer on Apple Silicon.
+- Go 1.26 or newer.
 
-### First-run Location Services prompt
+Permissions requested:
 
-The first time a consumer calls `Scan()`, macOS shows a permission dialog
-for "macwifi WiFi Scanner". Clicking Allow persists the TCC grant until
-the binary's signing identity changes — which, for releases signed by the
-same Developer ID, means "forever across library updates."
+- Location Services for WiFi discovery.
+- macOS Keychain for password retrieval.
 
-## Contributing / building the helper locally
+### Reuse One Helper Session
 
-If you're editing `scanner/Sources/main.swift`, you build and sign with
-your own cert:
+When scanning for networks and then fetching a password in one run, create a
+client and reuse it:
+
+```go
+ctx := context.Background()
+
+c, err := macwifi.New(ctx)
+if err != nil {
+	panic(err)
+}
+defer c.Close()
+
+networks, err := c.Scan(ctx)
+if err != nil {
+	panic(err)
+}
+
+password, err := c.Password(ctx, "MyHomeWiFi",
+	macwifi.OnKeychainAccess(func(ssid string) {
+		fmt.Printf("Approve the macOS Keychain prompt to read %q\n", ssid)
+	}))
+if err != nil {
+	panic(err)
+}
+
+fmt.Println(len(networks), password)
+```
+
+### Keychain Passwords
+
+The legacy **Always Allow** path is no longer available in the macOS Keychain
+access permission dialog, so users will see the prompt every time
+`macwifi.Password()` runs for an SSID.
+
+Use `OnKeychainAccess` to prepare users before macOS shows its dialog:
+
+```go
+password, err := macwifi.Password(ctx, ssid,
+	macwifi.OnKeychainAccess(func(ssid string) {
+		fmt.Printf("Approve the macOS Keychain prompt to read %q\n", ssid)
+	}))
+```
+
+## Development
+
+Run the example scanner:
 
 ```sh
-make scanner               # produces ./WifiScanner.app (debug-signed)
+go run ./examples/scan
+go run ./examples/scan --password MyHomeWiFi
+```
+
+Run tests:
+
+```sh
+go test ./...
+```
+
+Build and use a local helper while editing Swift code:
+
+```sh
+make scanner
 MACWIFI_APP=$PWD/WifiScanner.app go run ./examples/scan
 ```
 
-To cut a release with an updated embedded bundle:
+`MACWIFI_APP` tells the Go package to use a local helper bundle instead of the
+embedded one.
+
+## Releasing the Helper
+
+The embedded helper is part of the Go module via `go:embed`. To cut a release
+with an updated helper:
 
 ```sh
-make release               # build → sign (Developer ID) → notarize → staple
-                           # → copy to embedded/WifiScanner.app
+make release
 # bump embeddedVersion in embed.go
-# commit + tag + push
+# commit, tag, and push
 ```
 
-`make release` requires:
+`make release` builds, signs with Developer ID, notarizes, staples, and copies
+the bundle into `embedded/WifiScanner.app`.
 
-- A **Developer ID Application** cert in your login keychain.
-- A `xcrun notarytool` credential profile named `macwifi-notary`
-  (override via `$NOTARY_PROFILE`). Set it up once:
+Release prerequisites:
 
-  ```sh
-  xcrun notarytool store-credentials macwifi-notary \
-      --apple-id YOUR_APPLE_ID \
-      --team-id YOUR_TEAM_ID \
-      --password YOUR_APP_SPECIFIC_PASSWORD
-  ```
+- A **Developer ID Application** certificate in your login keychain.
+- A `xcrun notarytool` credential profile named `macwifi-notary`, or another
+  profile set through `$NOTARY_PROFILE`.
 
-  (Generate an app-specific password at
-  <https://appleid.apple.com/account/manage> under "Sign-In and Security →
-  App-Specific Passwords".)
+Set up the default notary profile once:
 
-### Keychain passwords
-
-WiFi passwords live in `/Library/Keychains/System.keychain` with an ACL
-that only whitelists Apple's WiFi daemons (`airportd`, the AirPort app
-group). Anything else — our `/usr/bin/security` shell-out, a custom signed
-app, anything — triggers macOS's consent dialog.
-
-On recent macOS versions (13+), that dialog only offers **Allow** (one-
-time) and **Deny** for these items. The legacy "Always Allow" button has
-been removed for third-party CLI access; clicking Allow does **not**
-persist a grant. **You'll see the dialog every time** you invoke
-`macwifi.Password()` for an SSID.
-
-Workarounds:
-
-- **Use `OnKeychainAccess`** to display a heads-up before the dialog, so
-  the user isn't surprised.
-- **Let the user type it manually** — cancel the dialog, prompt instead.
-- **Pre-approve via Keychain Access.app** — the GUI *does* still let you
-  edit the ACL directly: open the app, browse to System → the WiFi item
-  → Access Control tab → add `/usr/bin/security` to the allowed-apps list.
-  This is a one-time setup per SSID, and the grant persists.
-
-There is no programmatic bypass for unprivileged library code; it's a
-core part of the macOS security model. Privileged helpers (SMJobBless)
-that run as root can read System keychain items without ACL prompts, but
-installing one requires an admin password and is overkill for most use
-cases.
-
-## Architecture
-
-```
-┌────────────┐  open -W --env MACWIFI_PORT  ┌─────────────────────┐
-│ Go Client  │ ───────────────────────────► │ WifiScanner.app     │
-│ (New)      │                              │ (LaunchServices:    │
-│            │ ◄── 127.0.0.1:PORT ───────── │  CoreWLAN + Security) │
-│            │                              │                     │
-│  Scan()   →│ scan_request ─────────────►  │  runScan()          │
-│            │ ◄── scan_response ────────── │                     │
-│  Password →│ password_request ─────────►  │  SecItemCopyMatching│
-│            │ ◄── password_response ────── │  (macOS dialog)     │
-│  Close()  →│ close_request ────────────►  │  exit               │
-└────────────┘                              └─────────────────────┘
+```sh
+xcrun notarytool store-credentials macwifi-notary \
+	--apple-id YOUR_APPLE_ID \
+	--team-id YOUR_TEAM_ID \
+	--password YOUR_APP_SPECIFIC_PASSWORD
 ```
 
-One helper process per Client session, serving a loop of requests until
-`Close()` is called. Launched via `open -W` so macOS classifies it as a
-foreground LaunchServices app (required for unredacted CoreWLAN results).
-Communication is over a loopback TCP socket using a fixed-layout binary
-protocol — see `protocol.go` (Go side) and `scanner/Sources/main.swift`
-(Swift side) for the wire format.
+## Contributing
+
+Issues and pull requests are welcome, especially for:
+
+- Compatibility reports across macOS releases and hardware.
+- Better metadata mapping from CoreWLAN into the Go API.
+- Documentation improvements for real-world diagnostics, support, and security
+  use cases.
+
+For code changes, run `go test ./...` before opening a pull request. If your
+change touches the Swift helper, also test with `make scanner` and
+`MACWIFI_APP=$PWD/WifiScanner.app go run ./examples/scan`.
+
+Changes to the helper app need maintainer approval because signing and
+notarization happen offline.
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the full contribution workflow,
+[CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) for community expectations,
+[SECURITY.md](SECURITY.md) for vulnerability reporting, and
+[SUPPORT.md](SUPPORT.md) for support expectations.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
