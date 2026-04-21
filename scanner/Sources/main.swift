@@ -382,3 +382,5 @@ guard let portStr = ProcessInfo.processInfo.environment["MACWIFI_PORT"],
 }
 
 runService(port: port)
+
+// signing-flow-test
