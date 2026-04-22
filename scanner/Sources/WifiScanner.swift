@@ -357,7 +357,7 @@ func watchParentPID(_ pid: pid_t) {
     let source = DispatchSource.makeProcessSource(
         identifier: pid,
         eventMask: .exit,
-        queue: .global(qos: .utility),
+        queue: .global(qos: .utility)
     )
     source.setEventHandler { exit(0) }
     source.resume()
