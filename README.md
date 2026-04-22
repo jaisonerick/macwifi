@@ -93,6 +93,19 @@ Permissions requested:
 - Location Services for WiFi discovery.
 - macOS Keychain for password retrieval.
 
+### Versioning
+
+`macwifi` follows [Semantic Versioning](https://semver.org/). The exported
+Go API of the `macwifi` package — types, functions, and option helpers —
+is stable across the v1.x line: no breaking changes will land without a
+major-version bump. The wire protocol between the Go client and the
+embedded helper is an internal implementation detail and is not covered
+by this commitment.
+
+Versions before v1.0.0 are retracted in `go.mod` when they cannot meet
+the macOS support floor; `go get` and tooling like Dependabot will steer
+you to the latest non-retracted release.
+
 ### Reuse One Helper Session
 
 When scanning for networks and then fetching a password in one run, create a
@@ -163,39 +176,41 @@ MACWIFI_APP=$PWD/WifiScanner.app go run ./examples/scan
 `MACWIFI_APP` tells the Go package to use a local helper bundle instead of the
 embedded one.
 
-## Releasing the Helper
+## Releases
 
-The embedded helper is part of the Go module via `go:embed`. To cut a release
-with an updated helper:
+Releases are fully automated. Day-to-day:
 
-```sh
-make release
-# commit, tag, and push
-```
+1. Land changes on `main` using [Conventional Commits](https://www.conventionalcommits.org/).
+2. [Release Please](https://github.com/googleapis/release-please) keeps a
+   rolling Release PR open with the next `CHANGELOG.md` entry, the
+   `go.mod`-aware version bump, and the `embeddedVersion` constant in
+   `embed.go`.
+3. Merging the Release PR tags the version, publishes a GitHub Release,
+   primes `proxy.golang.org`, and attaches the signed `WifiScanner.app`
+   zip to the release.
 
-`make release` builds, signs with Developer ID, notarizes, staples, and copies
-the bundle into `embedded/WifiScanner.app`.
-
-Release prerequisites:
-
-- A **Developer ID Application** certificate in your login keychain.
-- A `xcrun notarytool` credential profile named `macwifi-notary`, or another
-  profile set through `$NOTARY_PROFILE`.
-
-Set up the default notary profile once:
-
-```sh
-xcrun notarytool store-credentials macwifi-notary \
-	--apple-id YOUR_APPLE_ID \
-	--team-id YOUR_TEAM_ID \
-	--password YOUR_APP_SPECIFIC_PASSWORD
-```
-
-On GitHub, pull requests to `main` that touch the Swift companion run the
-signed companion workflow. The workflow signs, notarizes, staples, and commits
-the updated `embedded/WifiScanner.app` back to the pull request branch before
-merge. The workflow expects the environment secrets documented in
+The signed companion workflow handles the helper bundle. Pull requests
+that touch `scanner/Sources/`, `scanner/Info.plist`,
+`scanner/entitlements.plist`, or the helper build scripts trigger a
+macOS runner that builds, codesigns with Developer ID, notarizes,
+staples, and commits the regenerated `embedded/WifiScanner.app` back to
+the PR branch before merge. The workflow expects the environment
+secrets documented in
 [`.github/SIGNING_SECRETS.md`](.github/SIGNING_SECRETS.md).
+
+### Local helper rebuild (development only)
+
+When iterating on Swift code, you don't need notarization — just an
+ad-hoc signed bundle pointed at via `MACWIFI_APP`:
+
+```sh
+make scanner
+MACWIFI_APP=$PWD/WifiScanner.app go run ./examples/scan
+```
+
+A full Developer ID + notarized release build can be produced locally
+with `make release`, but it is not required to ship — CI handles that
+end-to-end.
 
 ## Contributing
 
