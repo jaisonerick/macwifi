@@ -1,0 +1,29 @@
+title: macwifi
+description: Wi-Fi scanning and Keychain password access for Go programs on macOS 13+.
+url: https://jaisonerick.github.io
+baseurl: /macwifi
+
+remote_theme: just-the-docs/just-the-docs
+
+color_scheme: dark
+
+logo: ""
+search_enabled: true
+
+aux_links:
+  Repo on GitHub:
+    - "https://github.com/jaisonerick/macwifi"
+  pkg.go.dev:
+    - "https://pkg.go.dev/github.com/jaisonerick/macwifi"
+  macwifi-cli:
+    - "https://github.com/jaisonerick/macwifi-cli"
+
+aux_links_new_tab: true
+
+footer_content: 'MIT licensed. Built and maintained by <a href="https://github.com/jaisonerick">@jaisonerick</a>.'
+
+heading_anchors: true
+
+plugins:
+  - jekyll-remote-theme
+  - jekyll-seo-tag
