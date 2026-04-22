@@ -17,10 +17,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Cover the documented support floor (macOS 13) plus the two
-        # currently-supported newer majors so regressions on any of the
-        # three OS versions block merge.
-        os: [macos-13, macos-14, macos-latest]
+        # GitHub retired the macos-13 runner label in December 2025, so
+        # we can't continuously verify the documented macOS 13 support
+        # floor on CI. The Swift helper is still pinned to
+        # `-target arm64-apple-macos13.0` in the build script, which
+        # makes the shipped Mach-O run on macOS 13. macos-14 covers the
+        # older Swift 5.10 toolchain (catches Swift 6.x-only syntax);
+        # macos-latest covers the current SDK + Swift toolchain.
+        os: [macos-14, macos-latest]
 
     steps:
       - name: Check out repository
