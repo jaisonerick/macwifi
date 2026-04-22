@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.4](https://github.com/jaisonerick/macwifi/compare/v0.1.3...v0.1.4) (2026-04-22)
+
+
+### Bug Fixes
+
+* retract v0.1.0 ([#23](https://github.com/jaisonerick/macwifi/issues/23)) ([b60b4fb](https://github.com/jaisonerick/macwifi/commit/b60b4fb30a2a4c16e9d829ab417190a7dba32161))
+
 ## [0.1.3](https://github.com/jaisonerick/macwifi/compare/v0.1.2...v0.1.3) (2026-04-22)
 
 
