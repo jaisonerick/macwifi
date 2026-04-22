@@ -76,9 +76,9 @@ if [ "${#swift_sources[@]}" -eq 0 ]; then
 fi
 
 # Pinned to match scanner/Info.plist LSMinimumSystemVersion. Without an
-# explicit target, swiftc defaults to the SDK's platform version, which
-# makes the shipped helper refuse to launch on older macOS even when the
-# Info.plist advertises support.
+# explicit target, swiftc writes whatever the build-host SDK advertises
+# into the LC_BUILD_VERSION load command, and macOS refuses to launch
+# the helper on older hosts even when Info.plist claims support.
 swift_target="${SWIFT_TARGET:-arm64-apple-macos13.0}"
 
 echo "-> compiling (target $swift_target)"
