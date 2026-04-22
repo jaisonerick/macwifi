@@ -10,13 +10,28 @@ permissions:
   issues: write
   pull-requests: write
 
+env:
+  # Opt into Node 24 now so release-please-action stops warning about
+  # the Node 20 deprecation. GitHub forces Node 24 from 2026-06-02 and
+  # removes Node 20 on 2026-09-16.
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
 jobs:
   release-please:
     runs-on: ubuntu-latest
+    # Reuse the token that signed-companion already uses. Scoped to
+    # `repo` + `workflow`, which is what Release Please needs to open
+    # PRs, push tags, create releases, and crucially trigger CI on the
+    # Release PR (GITHUB_TOKEN cannot, to prevent recursion).
+    environment: macos-signing
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
     steps:
       - uses: googleapis/release-please-action@v4
         id: release
         with:
+          token: ${{ secrets.MACWIFI_AUTOMATION_TOKEN }}
           config-file: .release-please-config.json
           manifest-file: .release-please-manifest.json
 
@@ -26,3 +41,30 @@ jobs:
           TAG: ${{ steps.release.outputs.tag_name }}
         run: |
           curl -fsSL "https://proxy.golang.org/github.com/jaisonerick/macwifi/@v/${TAG}.info"
+
+  attach-helper:
+    name: Attach signed helper to release
+    needs: release-please
+    if: ${{ needs.release-please.outputs.release_created }}
+    runs-on: macos-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.release-please.outputs.tag_name }}
+
+      - name: Package signed helper
+        env:
+          TAG: ${{ needs.release-please.outputs.tag_name }}
+        run: |
+          set -euo pipefail
+          ditto -c -k --keepParent embedded/WifiScanner.app "WifiScanner.app-${TAG}.zip"
+
+      - name: Attach zip to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.release-please.outputs.tag_name }}
+        run: |
+          gh release upload "$TAG" "WifiScanner.app-${TAG}.zip" \
+            --repo "${{ github.repository }}"
