@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.3](https://github.com/jaisonerick/macwifi/compare/v0.1.2...v0.1.3) (2026-04-22)
+
+
+### Bug Fixes
+
+* pin helper Swift target to arm64-apple-macos13.0 ([#18](https://github.com/jaisonerick/macwifi/issues/18)) ([47160c4](https://github.com/jaisonerick/macwifi/commit/47160c428cd9397e1d21ff6b4c4d4e5d5a81fd94))
+
 ## [0.1.2](https://github.com/jaisonerick/macwifi/compare/v0.1.1...v0.1.2) (2026-04-21)
 
 
