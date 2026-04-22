@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.0.0](https://github.com/jaisonerick/macwifi/compare/v0.1.4...v1.0.0) (2026-04-22)
+
+
+### Bug Fixes
+
+* drop Swift 6.1 trailing commas for Swift 5.9/5.10 compat ([0f10718](https://github.com/jaisonerick/macwifi/commit/0f10718f9bcfda315ba4b1ebbc6e0c6f37e4d124))
+* retract v0.1.1 and v0.1.2 ([498cd94](https://github.com/jaisonerick/macwifi/commit/498cd948326769b3ee4d3ccd7a3b5871d1dbe8d9))
+
+
+### Documentation
+
+* declare v1 API stability and refresh release docs ([6e9ce78](https://github.com/jaisonerick/macwifi/commit/6e9ce78c5c150b8a9ace5485d0b9cf0e30fc0b23))
+
 ## [0.1.4](https://github.com/jaisonerick/macwifi/compare/v0.1.3...v0.1.4) (2026-04-22)
 
 
