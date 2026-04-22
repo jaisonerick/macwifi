@@ -94,7 +94,7 @@ replacement on the terminal, install
 [`macwifi-cli`](https://github.com/jaisonerick/macwifi-cli):
 
 ```sh
-go install github.com/jaisonerick/macwifi-cli@latest
+brew install jaisonerick/tap/macwifi-cli
 
 macwifi-cli scan
 macwifi-cli info

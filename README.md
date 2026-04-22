@@ -18,7 +18,11 @@ prompt; subsequent calls reuse it.
 
 Looking for a ready-to-run command instead of a library? See
 [`macwifi-cli`](https://github.com/jaisonerick/macwifi-cli) — a
-drop-in `airport`-replacement built on this package.
+drop-in `airport`-replacement built on this package:
+
+```sh
+brew install jaisonerick/tap/macwifi-cli
+```
 
 [apple-dts]: https://developer.apple.com/forums/thread/718331
 

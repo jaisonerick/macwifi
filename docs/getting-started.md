@@ -236,5 +236,6 @@ MACWIFI_APP="$PWD/WifiScanner.app" go run ./examples/scan
 - [GoDoc](https://pkg.go.dev/github.com/jaisonerick/macwifi) — full
   type and function reference.
 - [`macwifi-cli`](https://github.com/jaisonerick/macwifi-cli) — a
-  drop-in `airport`-replacement built on this package, if you'd
+  drop-in `airport`-replacement built on this package
+  (`brew install jaisonerick/tap/macwifi-cli`), if you'd
   rather not write Go.
