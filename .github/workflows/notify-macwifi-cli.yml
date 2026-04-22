@@ -1,0 +1,38 @@
+name: Notify macwifi-cli of new release
+
+# Fires whenever Release Please publishes a new GitHub Release in this
+# repository. The downstream macwifi-cli repo listens for this dispatch
+# and auto-bumps its `github.com/jaisonerick/macwifi` dependency, tags
+# a new patch release, and ships an updated Homebrew formula.
+#
+# Required secret:
+#   MACWIFI_CLI_DISPATCH_TOKEN
+#     Fine-grained PAT with `contents: read and write` on
+#     jaisonerick/macwifi-cli. Same PAT can be re-used for the
+#     downstream MACWIFI_CLI_PUSH_TOKEN and HOMEBREW_TAP_GITHUB_TOKEN
+#     secrets if its repository scope covers macwifi-cli + homebrew-tap.
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send repository_dispatch to macwifi-cli
+        env:
+          GH_TOKEN: ${{ secrets.MACWIFI_CLI_DISPATCH_TOKEN }}
+          VERSION: ${{ github.event.release.tag_name }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::warning::MACWIFI_CLI_DISPATCH_TOKEN is not set; skipping dispatch."
+            exit 0
+          fi
+          gh api repos/jaisonerick/macwifi-cli/dispatches \
+            -X POST \
+            -f event_type=macwifi-released \
+            -f client_payload[version]="$VERSION"
