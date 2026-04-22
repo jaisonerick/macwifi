@@ -3,31 +3,40 @@
 [![Go Reference](https://pkg.go.dev/badge/github.com/jaisonerick/macwifi.svg)](https://pkg.go.dev/github.com/jaisonerick/macwifi)
 [![CI](https://github.com/jaisonerick/macwifi/actions/workflows/ci.yml/badge.svg)](https://github.com/jaisonerick/macwifi/actions/workflows/ci.yml)
 
-Real macOS WiFi data for Go.
+Wi-Fi scanning and Keychain password access for Go programs on macOS 13+.
 
-Recent macOS versions can redact WiFi details from CLI and background tools.
-This lib helps you answer practical questions like "what network is this Mac
-seeing?" and "what BSSID is it connected to?"
+macOS 14.4 removed the `airport` CLI tool. `wdutil info` returns
+`BSSID : <redacted>` even with `sudo`, and CoreWLAN's `scanForNetworks`
+only returns real BSSIDs to apps signed with a stable Developer ID that
+have Location Services permission — which scripts and most CLI tools
+can't get ([Apple DTS forum thread][apple-dts]).
 
-This package gives Go programs a straightforward API for scanning nearby WiFi
-networks on macOS. It can also read saved WiFi passwords from the macOS Keychain
-after the user approves the system prompt.
+`macwifi` closes that gap by embedding a Developer-ID-signed and
+notarized Swift helper bundle inside the Go package. Your Go binary
+spawns the helper on first use to trigger the macOS Location Services
+prompt; subsequent calls reuse it.
 
-## Power TUI apps and internal WiFi tools
+Looking for a ready-to-run command instead of a library? See
+[`macwifi-cli`](https://github.com/jaisonerick/macwifi-cli) — a
+drop-in `airport`-replacement built on this package.
 
-`macwifi` is meant for Go developers building macOS-focused tools:
+[apple-dts]: https://developer.apple.com/forums/thread/718331
+
+## What you can build with it
 
 - Network diagnostics CLIs and TUIs.
-- IT, inventory, and support utilities that need local WiFi context.
-- Security and audit tools that need BSSID, channel, band, and security mode.
-- Migration or recovery tools that need user-approved access to saved WiFi
-  passwords.
-- Desktop agents that need a Go API while still respecting macOS privacy
-  prompts.
+- IT, inventory, and support utilities that need local Wi-Fi context.
+- Security and audit tools that need BSSID, channel, band, and security
+  mode.
+- Migration or recovery tools that need user-approved access to saved
+  Wi-Fi passwords.
+- Desktop agents that need a Go API while still respecting macOS
+  privacy prompts.
 
-It is not a cross-platform WiFi abstraction, packet-capture library, background
-daemon, or privacy-control bypass. Location Services and Keychain access remain
-under user control.
+Out of scope: cross-platform Wi-Fi abstraction, packet capture,
+background daemons that bypass Location Services, or privacy-control
+workarounds. Location Services and Keychain access stay under user
+control.
 
 ## What You Get
 
