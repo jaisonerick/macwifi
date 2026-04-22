@@ -15,7 +15,7 @@ import (
 // also includes a digest of the embedded bundle, so updated helper files are
 // extracted without requiring a manual version bump. Release Please keeps
 // this in sync with the module version on each release.
-const embeddedVersion = "0.1.3" // x-release-please-version
+const embeddedVersion = "0.1.4" // x-release-please-version
 
 // scannerBundle is the signed + notarized WifiScanner.app. Every file
 // under embedded/WifiScanner.app/ is baked into the Go binary — consumers
