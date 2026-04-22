@@ -50,7 +50,7 @@ func testBinaryWriterUsesLittleEndianAndLengthPrefixes() throws {
             0x04, 0x00, 0x77, 0x69, 0x66, 0x69,
             0x02, 0xAA, 0xBB,
         ],
-        "BinaryWriter should encode values in the helper wire format",
+        "BinaryWriter should encode values in the helper wire format"
     )
 }
 
@@ -97,7 +97,7 @@ func testParseBSSIDAcceptsHexOctets() throws {
     try expectEqual(
         parseBSSID("01:23:45:ab:CD:ef"),
         Data([0x01, 0x23, 0x45, 0xAB, 0xCD, 0xEF]),
-        "parseBSSID should accept six hex octets",
+        "parseBSSID should accept six hex octets"
     )
 }
 
@@ -119,7 +119,7 @@ func testEncodePasswordResponseMatchesWireFormat() throws {
             0x06, 0x00, 0x64, 0x65, 0x6E, 0x69, 0x65, 0x64,
             0x06, 0x00, 0x73, 0x65, 0x63, 0x72, 0x65, 0x74,
         ],
-        "password response should match the Go protocol wire format",
+        "password response should match the Go protocol wire format"
     )
 }
 
@@ -136,7 +136,7 @@ func testEncodeScanResponseMatchesWireFormat() throws {
         phyMode: "ax",
         password: "pw",
         current: true,
-        saved: true,
+        saved: true
     )
 
     let response = encodeScanResponse(networks: [network], error: "")
@@ -161,7 +161,7 @@ func testEncodeScanResponseMatchesWireFormat() throws {
             0x02, 0x00, 0x70, 0x77,
             0x03,
         ],
-        "scan response should match the Go protocol wire format",
+        "scan response should match the Go protocol wire format"
     )
 }
 
