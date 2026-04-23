@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.0.1](https://github.com/jaisonerick/macwifi/compare/v1.0.0...v1.0.1) (2026-04-22)
+
+
+### Documentation
+
+* pain-first README hook + Jekyll site for GitHub Pages ([#27](https://github.com/jaisonerick/macwifi/issues/27)) ([9bc1b12](https://github.com/jaisonerick/macwifi/commit/9bc1b121f44b3414cd3feacc56017f18a59ca5e5))
+* point macwifi-cli readers at brew install ([#29](https://github.com/jaisonerick/macwifi/issues/29)) ([b1646ad](https://github.com/jaisonerick/macwifi/commit/b1646adfdadba7d07b0e1cc06dc179178e292c6e))
+
 ## [1.0.0](https://github.com/jaisonerick/macwifi/compare/v0.1.4...v1.0.0) (2026-04-22)
 
 
